@@ -1,0 +1,85 @@
+{% extends "research/base.html" %}
+{% block title %}Recherche d’entreprise · Onbora{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">Base ARSP · recherche publique</p>
+    <h1>Trouver les bonnes traces,<br>écarter le bruit.</h1>
+    <p class="lead">Sélectionne une entreprise. Onbora combine plusieurs requêtes, déduplique les liens, analyse les pages les plus prometteuses et conserve les preuves.</p>
+  </div>
+  <div class="hero-stat">
+    {% if latest_import %}
+      <strong>{{ latest_import.records.count }}</strong>
+      <span>entreprises dans l’import actif</span>
+      <small>{{ latest_import.file_name }}</small>
+    {% else %}
+      <strong>0</strong><span>entreprise importée</span>
+    {% endif %}
+  </div>
+</section>
+
+{% if not latest_import %}
+  <div class="alert warning"><strong>La base ARSP est vide.</strong> Exécute d’abord la commande d’import indiquée dans le README.</div>
+{% else %}
+  <section class="panel search-panel">
+    <div class="panel-heading">
+      <div><p class="eyebrow">Étape 1</p><h2>Choisir une entreprise</h2></div>
+      <span class="muted">{{ page_obj.paginator.count }} résultat{{ page_obj.paginator.count|pluralize }} · {{ page_obj.paginator.per_page }} par page</span>
+    </div>
+    <form method="get" class="search-form">
+      <label class="sr-only" for="q">Nom ou numéro de dossier</label>
+      <input id="q" name="q" value="{{ query }}" placeholder="Ex. société minière ou numéro de dossier…" autofocus>
+      <button class="button primary" type="submit">Rechercher dans l’ARSP</button>
+    </form>
+    <div class="company-list">
+      {% for record in records %}
+        <article class="company-row">
+          <div>
+            <h3>{{ record.display_legal_name }}</h3>
+            <p>
+              <span>Dossier {{ record.dossier_number }}</span>
+              {% if record.raw_data.Province %}<span>{{ record.raw_data.Province }}</span>{% endif %}
+              {% if record.raw_data.RCCM %}<span>RCCM {{ record.raw_data.RCCM }}</span>{% endif %}
+            </p>
+            {% if record.raw_data.Activité %}<small>{{ record.raw_data.Activité|truncatechars:150 }}</small>{% endif %}
+          </div>
+          <form method="post" action="{% url 'web-run-create' %}">{% csrf_token %}
+            <input type="hidden" name="record_id" value="{{ record.pk }}">
+            <button class="button secondary" type="submit">Lancer la recherche</button>
+          </form>
+        </article>
+      {% empty %}
+        <div class="empty">Aucune entreprise ne correspond à « {{ query }} ».</div>
+      {% endfor %}
+    </div>
+    {% if page_obj.paginator.num_pages > 1 %}
+      <nav class="pagination" aria-label="Navigation des entreprises">
+        <span class="pagination-summary">Page {{ page_obj.number }} sur {{ page_obj.paginator.num_pages }}</span>
+        <div class="pagination-links">
+          {% if page_obj.has_previous %}
+            <a class="pagination-link" rel="prev" href="{% if query %}?q={{ query|urlencode }}&amp;page={{ page_obj.previous_page_number }}{% else %}?page={{ page_obj.previous_page_number }}{% endif %}">Précédente</a>
+          {% endif %}
+          {% if page_obj.has_next %}
+            <a class="pagination-link" rel="next" href="{% if query %}?q={{ query|urlencode }}&amp;page={{ page_obj.next_page_number }}{% else %}?page={{ page_obj.next_page_number }}{% endif %}">Suivante</a>
+          {% endif %}
+        </div>
+      </nav>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if recent_runs %}
+  <section class="panel">
+    <div class="panel-heading"><div><p class="eyebrow">Historique</p><h2>Recherches récentes</h2></div></div>
+    <div class="run-grid">
+      {% for run in recent_runs %}
+        <a class="run-card" href="{% url 'web-run-detail' run.pk %}">
+          <div><span class="status status-{{ run.state }}">{{ run.get_state_display }}</span><span class="identity">{{ run.get_identity_status_display|default:"—" }}</span></div>
+          <h3>{{ run.source_record.display_legal_name }}</h3>
+          <small>{{ run.created_at|date:"d/m/Y H:i" }}</small>
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+{% endblock %}

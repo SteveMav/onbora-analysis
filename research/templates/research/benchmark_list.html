@@ -1,0 +1,63 @@
+{% extends "research/base.html" %}
+{% block title %}Benchmark humain · Onbora{% endblock %}
+{% block content %}
+<section class="hero benchmark-hero">
+  <div>
+    <p class="eyebrow">Validation terrain</p>
+    <h1>Mesurer ce qu’un humain<br>trouve vraiment.</h1>
+    <p class="lead">Crée un lot de 10 entreprises, ouvre les sources une par une et compare les faits visibles avec ce qu’Onbora a réussi à extraire.</p>
+  </div>
+  <div class="hero-stat benchmark-stat">
+    <strong>10</strong>
+    <span>entreprises par benchmark</span>
+    <small>Évaluation humaine, sans notation par l’IA</small>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Nouveau test</p><h2>Créer un benchmark</h2></div>
+  </div>
+  {% if not latest_import %}
+    <div class="alert warning">La base ARSP est vide. Importe-la avant de créer un benchmark.</div>
+  {% else %}
+    <form method="post" action="{% url 'benchmark-create' %}" class="benchmark-create-form">
+      {% csrf_token %}
+      <label>
+        <span>Nom du benchmark</span>
+        <input name="name" maxlength="255" placeholder="Ex. Test extraction — septembre 2026">
+      </label>
+      <fieldset>
+        <legend>Sélection des entreprises</legend>
+        <label class="choice-card">
+          <input type="radio" name="selection_mode" value="random" checked>
+          <span><strong>Échantillon aléatoire</strong><small>Choisit 10 entreprises dans l’import actif et lance les recherches manquantes.</small></span>
+        </label>
+        <label class="choice-card">
+          <input type="radio" name="selection_mode" value="recent">
+          <span><strong>Recherches déjà terminées</strong><small>Réutilise les 10 entreprises les plus récemment analysées. {{ completed_run_count }} disponibles actuellement.</small></span>
+        </label>
+      </fieldset>
+      <button class="button primary" type="submit">Créer le benchmark de 10 entreprises</button>
+    </form>
+  {% endif %}
+</section>
+
+{% if benchmarks %}
+<section class="panel">
+  <div class="panel-heading"><div><p class="eyebrow">Historique</p><h2>Benchmarks</h2></div></div>
+  <div class="benchmark-list">
+    {% for benchmark in benchmarks %}
+      <a href="{% url 'benchmark-detail' benchmark.pk %}" class="benchmark-row">
+        <div>
+          <span class="status status-{{ benchmark.status }}">{{ benchmark.get_status_display }}</span>
+          <h3>{{ benchmark.name }}</h3>
+          <small>Créé par {{ benchmark.created_by.username }} · {{ benchmark.created_at|date:"d/m/Y H:i" }}</small>
+        </div>
+        <div class="benchmark-progress"><strong>{{ benchmark.cases.all|length }}/10</strong><span>cas préparés</span></div>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

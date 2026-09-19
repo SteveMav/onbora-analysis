@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+db.sqlite3
+media/
+.env
+.env.*
+.playwright-cli/
+output/playwright/
+.codex_tmp/
+*.log

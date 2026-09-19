@@ -1,0 +1,213 @@
+{% extends "research/base.html" %}
+{% block title %}{{ run.source_record.display_legal_name }} · Onbora{% endblock %}
+{% block head %}{% if is_active %}<meta http-equiv="refresh" content="4">{% endif %}{% endblock %}
+{% block content %}
+<a class="back" href="{% url 'dashboard' %}">← Toutes les recherches</a>
+<section class="run-header">
+  <div>
+    <p class="eyebrow">Recherche #{{ run.pk }} · dossier {{ run.source_record.dossier_number }}</p>
+    <h1>{{ run.source_record.display_legal_name }}</h1>
+    <p class="lead">{{ seed.activity_arsp|default:"Activité ARSP non renseignée" }}{% if seed.province %} · {{ seed.province }}{% endif %}</p>
+  </div>
+  <div class="state-block">
+    <span class="status status-{{ run.state }}">{{ run.get_state_display }}</span>
+    {% if run.identity_status %}<strong class="identity-large">Identité {{ run.get_identity_status_display }}</strong>{% endif %}
+    <span>Couverture {{ run.get_coverage_display|lower }}</span>
+  </div>
+</section>
+
+{% if is_active %}
+  <div class="progress-card"><span class="spinner"></span><div><strong>Recherche en cours</strong><p>La page s’actualise automatiquement. Le worker déduplique et analyse les meilleures sources.</p></div></div>
+{% endif %}
+
+{% if run.state == "failed" %}
+  <div class="alert danger"><strong>La recherche a échoué.</strong> Vérifie que SearXNG et le worker sont démarrés, puis relance depuis l’accueil.</div>
+{% endif %}
+
+{% if run.limitations %}
+  <div class="alert warning"><strong>Limites de couverture</strong><ul>{% for limitation in run.limitations %}<li>{{ limitation }}</li>{% endfor %}</ul></div>
+{% endif %}
+
+{% if run.result_summary %}
+  <section class="metrics">
+    <div><strong>{{ run.result_summary.query_count }}</strong><span>requêtes ciblées</span></div>
+    <div><strong>{{ run.result_summary.returned_count }}</strong><span>liens retournés</span></div>
+    <div><strong>{{ run.result_summary.unique_count }}</strong><span>URLs uniques</span></div>
+    <div><strong>{{ run.result_summary.captured_count }}</strong><span>pages conservées</span></div>
+  </section>
+{% endif %}
+
+{% if not is_active and sector_segmentation %}
+<section class="panel sector-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Segmentation entreprise</p><h2>Secteur d’activité</h2></div>
+    <span class="model-badge">Taxonomie {{ sector_segmentation.taxonomy_version }}</span>
+  </div>
+  {% if sector_segmentation.status == "complete" %}
+    <div class="sector-result">
+      <div class="sector-primary">
+        <p class="sector-label">Secteur principal · confiance {{ sector_segmentation.primary.confidence }}</p>
+        <h3>{{ sector_segmentation.primary.label }}</h3>
+        <p>{{ sector_segmentation.primary.reason }}</p>
+        {% if sector_segmentation.raw_activity %}<p class="sector-raw"><strong>Activité ARSP :</strong> {{ sector_segmentation.raw_activity }}</p>{% endif %}
+        {% if sector_segmentation.primary.sources %}
+          <div class="citation-list">{% for source in sector_segmentation.primary.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>
+        {% else %}
+          <p class="lead-seed-note">Classification fondée sur l’activité ARSP — confirmation publique encore nécessaire.</p>
+        {% endif %}
+      </div>
+      {% if sector_segmentation.alternatives %}
+        <div class="sector-alternatives"><strong>Activités secondaires possibles</strong><ul>{% for segment in sector_segmentation.alternatives %}<li>{{ segment.label }}</li>{% endfor %}</ul></div>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="sector-unknown"><strong>Secteur à confirmer</strong><p>{{ sector_segmentation.message }}</p>{% if sector_segmentation.raw_activity %}<small>Activité ARSP : {{ sector_segmentation.raw_activity }}</small>{% endif %}</div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if not is_active and lead_qualification %}
+<section class="panel lead-qualification-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Aide à la prospection</p><h2>Propositions de leads Orange</h2></div>
+    {% if lead_qualification.status == "complete" %}<span class="model-badge">Offres RDC · Catalogue {{ lead_qualification.catalog_version }}</span>{% endif %}
+  </div>
+  <p class="section-intro">Seules les offres validées pour Orange RDC sont proposées. Ces cartes indiquent une compatibilité à vérifier, jamais une intention d’achat.</p>
+  {% if lead_qualification.status == "complete" %}
+    <div class="lead-path-grid">
+      {% for journey in lead_qualification.journeys %}
+      <article class="lead-path-card lead-path-{{ journey.verdict }}">
+        <div class="lead-path-top">
+          <div><p class="lead-path-kicker">Confiance {{ journey.confidence }}</p><h3>{{ journey.title }}</h3></div>
+          <span class="lead-verdict">{{ journey.verdict_label }}</span>
+        </div>
+        <p class="lead-path-description">{{ journey.description }}</p>
+        <p class="lead-reason">{{ journey.reason }}</p>
+        {% if journey.signals %}
+          <div class="lead-signals">
+            {% for signal in journey.signals %}<span>{{ signal.label }}</span>{% endfor %}
+          </div>
+        {% endif %}
+        {% if journey.offers %}
+          <div class="lead-block"><strong>Offres Orange RDC à comparer</strong><ul>{% for offer in journey.offers %}<li>{{ offer.name }}</li>{% endfor %}</ul></div>
+        {% endif %}
+        <div class="lead-question"><strong>Question KAM</strong><p>{{ journey.next_question }}</p></div>
+        <div class="lead-block"><strong>Information manquante</strong><p>{{ journey.missing_information }}</p></div>
+        {% if journey.sources %}
+          <div class="citation-list">{% for source in journey.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>
+        {% elif journey.sector_fit %}
+          <p class="lead-seed-note">Hypothèse fondée uniquement sur l’activité ARSP — à confirmer.</p>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="alert warning"><strong>Qualification commerciale non disponible.</strong> {{ lead_qualification.message }}</div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if not is_active and ai_summary %}
+<section class="panel ai-panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Lecture assistée</p><h2>Résumé IA sourcé</h2></div>
+    {% if run.ai_model %}<span class="model-badge">{{ run.ai_model }}</span>{% endif %}
+  </div>
+  <p class="section-intro">Gemini résume uniquement les preuves récupérées par Onbora. Clique sur les sources pour vérifier chaque affirmation.</p>
+  {% if ai_summary.status == "complete" %}
+    <div class="ai-overview">
+      <p>{{ ai_summary.overview.text }}</p>
+      <div class="citation-list">
+        {% for source in ai_summary.overview.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}
+      </div>
+    </div>
+    {% if ai_summary.key_facts %}
+      <h3 class="ai-subtitle">Faits clés</h3>
+      <div class="ai-fact-list">
+        {% for fact in ai_summary.key_facts %}
+          <article><p>{{ fact.text }}</p><div class="citation-list">{% for source in fact.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div></article>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% if ai_summary.contradictions %}
+      <div class="ai-warning"><h3>Contradictions ou points à vérifier</h3>
+        {% for item in ai_summary.contradictions %}<article><p>{{ item.text }}</p><div class="citation-list">{% for source in item.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div></article>{% endfor %}
+      </div>
+    {% endif %}
+    {% if ai_summary.gaps %}
+      <div class="ai-gaps"><h3>Informations encore manquantes</h3><ul>{% for gap in ai_summary.gaps %}<li>{{ gap }}</li>{% endfor %}</ul></div>
+    {% endif %}
+  {% else %}
+    <div class="alert warning"><strong>Résumé IA non disponible.</strong> {{ ai_summary.message }}</div>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Inventaire complet</p><h2>Toutes les sources trouvées</h2></div>
+    <span class="count">{{ discovered_sources|length }}</span>
+  </div>
+  <p class="section-intro">Aucun lien retourné par le moteur n’est caché ici. L’étiquette d’analyse est seulement indicative : ouvre chaque source pour faire ta propre vérification.</p>
+  <div class="source-inventory">
+    {% for source in discovered_sources %}
+      <article class="source-row">
+        <div class="source-main">
+          <div class="source-labels">
+            <span class="provider provider-{{ source.attempt.provider }}">{% if source.attempt.provider == "gemini" %}Gemini Search{% else %}SearXNG{% endif %}</span>
+            <span class="source-category">{{ source.attempt.category }}</span>
+            {% if source.evaluation %}<span class="verdict">{{ source.evaluation.verdict }}</span>{% else %}<span class="not-analyzed">Non analysée</span>{% endif %}
+          </div>
+          <h3><a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.attempt.title|default:source.url }} ↗</a></h3>
+          <a class="raw-url" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a>
+          {% if source.attempt.snippet %}<p>{{ source.attempt.snippet }}</p>{% endif %}
+        </div>
+        <div class="source-rank"><strong>{{ source.attempt.relevance_score }}</strong><span>indice</span></div>
+      </article>
+    {% empty %}
+      {% if not is_active %}<div class="empty">Le moteur n’a retourné aucun lien. Consulte le journal ci-dessous pour voir les moteurs indisponibles.</div>{% endif %}
+    {% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-heading">
+    <div><p class="eyebrow">Analyse indicative</p><h2>Sources probablement liées à l’entreprise</h2></div>
+    <span class="count">{{ relevant_evidence|length }}</span>
+  </div>
+  <div class="evidence-list">
+    {% for link in relevant_evidence %}
+      <article class="evidence-card">
+        <div class="evidence-top">
+          <div><span class="verdict">{{ link.verdict }}</span><span class="source-type">{{ link.evidence.source_type }}</span></div>
+          <strong>{{ link.relevance_score }}/15</strong>
+        </div>
+        <h3><a href="{{ link.evidence.observed_url }}" target="_blank" rel="noopener noreferrer">{{ link.evidence.title|default:link.evidence.publisher }} ↗</a></h3>
+        <p class="publisher">{{ link.evidence.publisher }} · collecté le {{ link.evidence.collected_at|date:"d/m/Y à H:i" }}</p>
+        <p class="excerpt">{{ link.relevant_excerpt|linebreaksbr }}</p>
+        <ul class="reason-list">{% for reason in link.reasons %}<li>{{ reason }}</li>{% endfor %}</ul>
+      </article>
+    {% empty %}
+      {% if not is_active %}<div class="empty">Aucune page analysée ne contient encore assez d’éléments concordants.</div>{% endif %}
+    {% endfor %}
+  </div>
+</section>
+
+{% if rejected_evidence %}
+<details class="panel details-panel">
+  <summary>{{ rejected_evidence|length }} page{{ rejected_evidence|length|pluralize }} analysée{{ rejected_evidence|length|pluralize }} puis écartée{{ rejected_evidence|length|pluralize }}</summary>
+  <div class="compact-list">
+    {% for link in rejected_evidence %}<a href="{{ link.evidence.observed_url }}" target="_blank" rel="noopener noreferrer"><span>{{ link.evidence.title }}</span><small>{{ link.evidence.publisher }} · score {{ link.relevance_score }}</small></a>{% endfor %}
+  </div>
+</details>
+{% endif %}
+
+<details class="panel details-panel">
+  <summary>Journal technique de la recherche ({{ attempts|length }} événements affichés)</summary>
+  <div class="log-table">
+    {% for attempt in attempts %}
+      <div><span class="log-status">{{ attempt.get_status_display }}</span><span>{{ attempt.category }}</span><span>{{ attempt.title|default:attempt.query|truncatechars:90 }}</span><span>{{ attempt.reason|truncatechars:90 }}</span></div>
+    {% empty %}<p class="empty">Aucune tentative enregistrée.</p>{% endfor %}
+  </div>
+</details>
+{% endblock %}

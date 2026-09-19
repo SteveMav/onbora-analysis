@@ -1,0 +1,15 @@
+{% extends "research/base.html" %}
+{% block title %}Connexion · Onbora{% endblock %}
+{% block content %}
+<section class="login-card">
+  <p class="eyebrow">Espace interne</p>
+  <h1>Connexion à Onbora</h1>
+  <p class="muted">Utilise ton compte Django pour accéder aux recherches d’entreprises.</p>
+  {% if form.errors %}<div class="alert danger">Identifiant ou mot de passe incorrect.</div>{% endif %}
+  <form method="post" class="stack">{% csrf_token %}
+    <label>Nom d’utilisateur {{ form.username }}</label>
+    <label>Mot de passe {{ form.password }}</label>
+    <button class="button primary" type="submit">Se connecter</button>
+  </form>
+</section>
+{% endblock %}

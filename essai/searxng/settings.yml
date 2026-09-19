@@ -1,0 +1,28 @@
+use_default_settings: true
+
+general:
+  instance_name: "Onbora Essai"
+
+search:
+  safe_search: 1
+  default_lang: fr
+  formats:
+    - html
+    - json
+
+server:
+  limiter: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 8.0
+  max_request_timeout: 15.0
+
+# The regular Google adapter is more reliable for exact Congolese company
+# names than the default Google CSE adapter. SearXNG still remains the only
+# service contacted by the Django application.
+engines:
+  - name: google
+    disabled: false
+  - name: google cse
+    disabled: true

@@ -1,0 +1,117 @@
+{% extends "research/base.html" %}
+{% block title %}{{ benchmark.name }} · Onbora{% endblock %}
+{% block content %}
+<a class="back" href="{% url 'benchmark-list' %}">← Tous les benchmarks</a>
+<section class="run-header benchmark-header">
+  <div>
+    <p class="eyebrow">Benchmark humain · 10 entreprises</p>
+    <h1>{{ benchmark.name }}</h1>
+    <p class="lead">Lis les pages toi-même, puis note ce qui était réellement disponible et ce qu’Onbora a su restituer.</p>
+  </div>
+  <div class="state-block">
+    <span class="status status-{{ benchmark.status }}">{{ benchmark.get_status_display }}</span>
+    <small>{{ metrics.completed }} évaluation{{ metrics.completed|pluralize }} terminée{{ metrics.completed|pluralize }}</small>
+  </div>
+</section>
+
+<section class="metrics benchmark-metrics" aria-label="Résultats du benchmark">
+  <div><strong>{{ metrics.completed }}/{{ metrics.total }}</strong><span>cas évalués</span></div>
+  <div><strong>{{ metrics.human_value_pct }}%</strong><span>sources utiles pour l’humain</span></div>
+  <div><strong>{{ metrics.system_value_pct }}%</strong><span>résultats Onbora utiles</span></div>
+  <div><strong>{{ metrics.missed }}</strong><span>cas avec faits manqués</span></div>
+  <div><strong>{{ metrics.identity_errors }}</strong><span>erreurs d’identité</span></div>
+</section>
+
+<div class="benchmark-guide">
+  <strong>Protocole rapide</strong>
+  <ol>
+    <li>Ouvre au moins les liens les mieux classés.</li>
+    <li>Note les faits utiles visibles pour un KAM.</li>
+    <li>Compare-les au résumé et aux extraits Onbora.</li>
+    <li>Enregistre un verdict — même si aucune information n’existe.</li>
+  </ol>
+</div>
+
+<section class="benchmark-cases">
+  {% for case in cases %}
+  <details class="benchmark-case" id="case-{{ case.pk }}" {% if case.evaluation_form.errors or forloop.first %}open{% endif %}>
+    <summary>
+      <span class="case-number">{{ case.position }}</span>
+      <span class="case-title"><strong>{{ case.source_record.display_legal_name }}</strong><small>Dossier {{ case.source_record.dossier_number }}</small></span>
+      {% if case.research_run %}<span class="status status-{{ case.research_run.state }}">{{ case.research_run.get_state_display }}</span>{% endif %}
+      <span class="case-review case-review-{{ case.review_status }}">{{ case.get_review_status_display }}</span>
+    </summary>
+    <div class="benchmark-case-body">
+      <div class="benchmark-evidence-column">
+        <section class="benchmark-block seed-block">
+          <div class="block-heading"><h3>Données ARSP</h3>{% if case.research_run %}<a href="{% url 'web-run-detail' case.research_run.pk %}" target="_blank">Ouvrir la fiche complète ↗</a>{% endif %}</div>
+          <dl class="seed-grid">
+            <div><dt>RCCM</dt><dd>{{ case.source_record.raw_data.RCCM|default:"Non renseigné" }}</dd></div>
+            <div><dt>Province</dt><dd>{{ case.source_record.raw_data.Province|default:"Non renseignée" }}</dd></div>
+            <div class="wide"><dt>Activité déclarée</dt><dd>{{ case.source_record.raw_data.Activité|default:"Non renseignée" }}</dd></div>
+          </dl>
+        </section>
+
+        {% if not case.research_run or case.research_run.state == 'queued' or case.research_run.state == 'researching' %}
+          <div class="alert warning"><strong>Recherche en cours.</strong> Tu peux commencer plus tard lorsque les liens et extraits seront disponibles.</div>
+        {% else %}
+          <section class="benchmark-block system-result">
+            <div class="block-heading"><h3>Résultat Onbora</h3><span>{{ case.research_run.result_summary.returned_count|default:0 }} liens · {{ case.research_run.result_summary.captured_count|default:0 }} pages conservées</span></div>
+            {% if case.research_run.ai_summary.status == 'complete' %}
+              <p class="system-overview">{{ case.research_run.ai_summary.overview.text }}</p>
+              {% if case.research_run.ai_summary.key_facts %}
+                <ul>{% for fact in case.research_run.ai_summary.key_facts %}<li>{{ fact.text }}</li>{% endfor %}</ul>
+              {% endif %}
+            {% else %}
+              <p class="muted">Aucun résumé IA exploitable. Les sources restent à vérifier manuellement.</p>
+            {% endif %}
+          </section>
+
+          <section class="benchmark-block">
+            <div class="block-heading"><h3>Liens à vérifier</h3><span>{{ case.discovered_sources|length }} affichés</span></div>
+            <div class="benchmark-source-list">
+              {% for source in case.discovered_sources %}
+                <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                  <span><strong>{{ source.title|default:source.url }}</strong><small>{{ source.snippet|truncatechars:190 }}</small></span>
+                  <b>{{ source.relevance_score }}</b>
+                </a>
+              {% empty %}<p class="muted">Aucun lien public découvert.</p>{% endfor %}
+            </div>
+          </section>
+
+          {% if case.evidence_links %}
+          <section class="benchmark-block">
+            <div class="block-heading"><h3>Extraits retenus</h3><span>{{ case.evidence_links|length }}</span></div>
+            {% for link in case.evidence_links %}
+              <article class="benchmark-excerpt"><strong>{{ link.evidence.title }}</strong><p>{{ link.relevant_excerpt }}</p></article>
+            {% endfor %}
+          </section>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      <form method="post" action="{% url 'benchmark-case-update' benchmark.pk case.pk %}" class="benchmark-review-form">
+        {% csrf_token %}
+        <p class="eyebrow">Évaluation humaine</p>
+        <h3>Ton verdict</h3>
+        {% if case.evaluation_form.non_field_errors %}<div class="form-errors">{{ case.evaluation_form.non_field_errors }}</div>{% endif %}
+        <div class="form-field"><label for="{{ case.evaluation_form.source_potential.id_for_label }}">{{ case.evaluation_form.source_potential.label }}</label>{{ case.evaluation_form.source_potential }}{{ case.evaluation_form.source_potential.errors }}</div>
+        <div class="form-row">
+          <div class="form-field"><label for="{{ case.evaluation_form.identity_check.id_for_label }}">{{ case.evaluation_form.identity_check.label }}</label>{{ case.evaluation_form.identity_check }}{{ case.evaluation_form.identity_check.errors }}</div>
+          <div class="form-field"><label for="{{ case.evaluation_form.system_verdict.id_for_label }}">{{ case.evaluation_form.system_verdict.label }}</label>{{ case.evaluation_form.system_verdict }}{{ case.evaluation_form.system_verdict.errors }}</div>
+        </div>
+        <div class="form-row compact-fields">
+          <div class="form-field"><label for="{{ case.evaluation_form.pages_reviewed.id_for_label }}">{{ case.evaluation_form.pages_reviewed.label }}</label>{{ case.evaluation_form.pages_reviewed }}{{ case.evaluation_form.pages_reviewed.errors }}</div>
+          <div class="form-field"><label for="{{ case.evaluation_form.useful_fact_count.id_for_label }}">{{ case.evaluation_form.useful_fact_count.label }}</label>{{ case.evaluation_form.useful_fact_count }}{{ case.evaluation_form.useful_fact_count.errors }}</div>
+        </div>
+        <div class="form-field"><label for="{{ case.evaluation_form.human_findings.id_for_label }}">{{ case.evaluation_form.human_findings.label }}</label>{{ case.evaluation_form.human_findings }}<small>{{ case.evaluation_form.human_findings.help_text }}</small>{{ case.evaluation_form.human_findings.errors }}</div>
+        <div class="form-field"><label for="{{ case.evaluation_form.missed_information.id_for_label }}">{{ case.evaluation_form.missed_information.label }}</label>{{ case.evaluation_form.missed_information }}<small>{{ case.evaluation_form.missed_information.help_text }}</small>{{ case.evaluation_form.missed_information.errors }}</div>
+        <div class="form-field"><label for="{{ case.evaluation_form.reviewer_notes.id_for_label }}">{{ case.evaluation_form.reviewer_notes.label }}</label>{{ case.evaluation_form.reviewer_notes }}{{ case.evaluation_form.reviewer_notes.errors }}</div>
+        <button class="button primary" type="submit">Enregistrer l’évaluation {{ case.position }}/10</button>
+        {% if case.reviewed_at %}<small class="saved-note">Dernière validation le {{ case.reviewed_at|date:"d/m/Y à H:i" }} par {{ case.reviewed_by.username }}</small>{% endif %}
+      </form>
+    </div>
+  </details>
+  {% endfor %}
+</section>
+{% endblock %}

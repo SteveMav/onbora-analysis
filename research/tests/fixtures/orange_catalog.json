@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "catalog_version": "orange-test-v1",
+  "status": "draft",
+  "services": [
+    {
+      "service_id": "liaison_specialisee_vpn",
+      "name": "Liaison Spécialisée VPN",
+      "category": "Internet fixe et réseaux",
+      "description": "Interconnexion de sites distants.",
+      "match": {
+        "need_keywords": ["réseau multisite", "sites distants"],
+        "sectors": [],
+        "required_profile_fields": ["locations", "size"]
+      }
+    },
+    {
+      "service_id": "api_orange_money",
+      "name": "API Orange Money",
+      "category": "Orange Money Business",
+      "description": "Encaissement numérique.",
+      "match": {
+        "need_keywords": ["paiement en ligne", "application mobile"],
+        "sectors": ["commerce", "fintech"],
+        "required_profile_fields": ["sector", "activities"]
+      }
+    },
+    {
+      "service_id": "essentiel_m2m",
+      "name": "Essentiel M2M",
+      "category": "IoT et M2M",
+      "description": "Connectivité des véhicules et équipements.",
+      "match": {
+        "need_keywords": ["flotte de véhicules", "télémétrie"],
+        "sectors": ["transport", "logistique"],
+        "required_profile_fields": ["activities", "locations"]
+      }
+    },
+    {
+      "service_id": "microsoft_365",
+      "name": "Microsoft 365",
+      "category": "Cloud et collaboration",
+      "description": "Messagerie et collaboration cloud.",
+      "match": {
+        "need_keywords": ["microsoft 365", "travail hybride"],
+        "sectors": [],
+        "required_profile_fields": ["size"]
+      }
+    },
+    {
+      "service_id": "cyber_diagnostic",
+      "name": "Cyber Diagnostic",
+      "category": "Cybersécurité",
+      "description": "État des lieux de la sécurité numérique.",
+      "match": {
+        "need_keywords": ["cybersécurité", "audit de sécurité"],
+        "sectors": [],
+        "required_profile_fields": ["activities"]
+      }
+    },
+    {
+      "service_id": "hebergement_datacenter",
+      "name": "Hébergement Datacenter",
+      "category": "Datacenter et infrastructure",
+      "description": "Hébergement de serveurs.",
+      "match": {
+        "need_keywords": ["serveurs", "datacenter"],
+        "sectors": [],
+        "required_profile_fields": ["activities"]
+      }
+    },
+    {
+      "service_id": "global_cloud_portfolio",
+      "name": "Cloud international Orange Business",
+      "category": "Cloud international",
+      "description": "Cloud et continuité internationale.",
+      "rdc_availability": "to_confirm",
+      "match": {
+        "need_keywords": ["migration cloud", "reprise après sinistre"],
+        "sectors": [],
+        "required_profile_fields": ["activities", "locations", "constraints"]
+      }
+    }
+  ]
+}
