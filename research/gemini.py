@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 from django.conf import settings
 
-from .web_research import CompanySeed, SearchHit, canonicalize_url
+from .web_research import CompanySeed, SearchHit, canonicalize_url, company_website_domain
 
 
 class GeminiServiceError(RuntimeError):
@@ -151,67 +151,76 @@ class GeminiResearchClient:
         )
 
     def search(self, company: CompanySeed, reason: str) -> list[SearchHit]:
-        prompt = f"""
-Tu complètes une recherche d'entreprise en République démocratique du Congo.
-Cherche sur le web des pages publiques qui concernent précisément cette entité.
-N'inclus pas de données personnelles de dirigeants ou salariés. Privilégie les
-registres, le site officiel, les partenaires, appels d'offres, communiqués,
-annuaires professionnels et médias crédibles. Ne confonds jamais deux sociétés
-portant un nom proche.
-
+        context = f"""
+Recherche d'entreprise en République démocratique du Congo. Cherche uniquement
+des pages publiques qui concernent précisément cette entité. N'inclus pas de
+données personnelles de dirigeants ou salariés. Distingue les homonymes.
 Entreprise : {company.legal_name}
 Nom commercial : {company.trade_name or 'non renseigné'}
 RCCM : {company.rccm or 'non renseigné'}
 Province : {company.province or 'non renseignée'}
 Activité ARSP : {company.sector or 'non renseignée'}
-Motif du complément : {reason}
-
-Utilise Google Search et donne une réponse brève fondée sur les pages trouvées.
+Motif : {reason}
+Utilise Google Search et cite les pages publiques découvertes. Ne fabrique pas d'URL.
 """.strip()
+        angles = (
+            "Vérifie l'identité dans les registres, annuaires professionnels et sites officiels, avec les variantes du nom et le RCCM.",
+            "Cherche les activités et implantations sur les sites officiels, partenaires, marchés publics et appels d'offres.",
+            "Cherche des mentions indépendantes dans les communiqués, publications sectorielles et médias crédibles.",
+        )
+        sources_by_angle: list[list[tuple[str, str]]] = []
         try:
             from google.genai import types
 
             with self._client() as client:
-                response = client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        tools=[types.Tool(google_search=types.GoogleSearch())],
-                        temperature=0,
-                        max_output_tokens=1200,
-                    ),
-                )
-            candidates = response.candidates or []
-            metadata = candidates[0].grounding_metadata if candidates else None
-            chunks = getattr(metadata, "grounding_chunks", None) or []
+                for angle in angles:
+                    response = client.models.generate_content(
+                        model=self.model,
+                        contents=f"{context}\n\n{angle}",
+                        config=types.GenerateContentConfig(
+                            tools=[types.Tool(google_search=types.GoogleSearch())],
+                            temperature=0,
+                            max_output_tokens=1200,
+                        ),
+                    )
+                    candidates = response.candidates or []
+                    metadata = candidates[0].grounding_metadata if candidates else None
+                    angle_sources: list[tuple[str, str]] = []
+                    for chunk in getattr(metadata, "grounding_chunks", None) or []:
+                        web = getattr(chunk, "web", None)
+                        url = _short_text(getattr(web, "uri", ""), 2048)
+                        title = _short_text(getattr(web, "title", ""), 1000) or "Source trouvée par Gemini"
+                        try:
+                            canonicalize_url(url)
+                        except ValueError:
+                            continue
+                        angle_sources.append((title, url))
+                    sources_by_angle.append(angle_sources)
         except Exception as error:
             raise _provider_error("Recherche complémentaire Gemini", error) from error
-
         hits: list[SearchHit] = []
         seen: set[str] = set()
-        for chunk in chunks:
-            web = getattr(chunk, "web", None)
-            url = _short_text(getattr(web, "uri", ""), 2048)
-            title = _short_text(getattr(web, "title", ""), 1000) or "Source trouvée par Gemini"
-            try:
+        for index in range(max((len(sources) for sources in sources_by_angle), default=0)):
+            for sources in sources_by_angle:
+                if index >= len(sources):
+                    continue
+                title, url = sources[index]
                 canonical_url = canonicalize_url(url)
-            except ValueError:
-                continue
-            if canonical_url in seen:
-                continue
-            seen.add(canonical_url)
-            hits.append(SearchHit(
-                query=f"Complément Gemini pour {company.legal_name}",
-                category="ai_fallback",
-                rank=len(hits) + 1,
-                title=title,
-                url=url,
-                snippet="",
-                discovery_score=0,
-                provider="gemini",
-            ))
-            if len(hits) >= settings.ONBORA_GEMINI_MAX_SEARCH_SOURCES:
-                break
+                if canonical_url in seen:
+                    continue
+                seen.add(canonical_url)
+                hits.append(SearchHit(
+                    query=f"Complément Gemini pour {company.legal_name}",
+                    category="ai_fallback",
+                    rank=len(hits) + 1,
+                    title=title,
+                    url=url,
+                    snippet="",
+                    discovery_score=0,
+                    provider="gemini",
+                ))
+                if len(hits) >= settings.ONBORA_GEMINI_MAX_SEARCH_SOURCES:
+                    return hits
         return hits
 
     def summarize(self, company: CompanySeed, evidence: Iterable[SummaryEvidence]) -> dict[str, Any]:
@@ -244,8 +253,15 @@ rien, ne complète rien avec ta mémoire et ne déduis aucun besoin commercial.
 Chaque affirmation du résumé, chaque fait et chaque contradiction doit citer au
 moins un evidence_id fourni. Indique dans gaps les informations importantes non
 confirmées. Sois bref, concret et prudent sur l'identité.
+Décris les activités explicitement présentes dans les sources, même si leur
+rattachement juridique reste à vérifier. Une source Pertinente et first_party
+sur le domaine du contact ARSP est rattachée à l'entreprise par concordance
+du nom et du contact. Décris ses activités dans overview et réserve l'absence
+de vérification publique du RCCM à gaps.
 
 Entreprise ARSP : {company.legal_name}
+Nom commercial ARSP : {company.trade_name or 'non renseigné'}
+Domaine du contact ARSP : {company_website_domain(company) or 'non établi'}
 RCCM : {company.rccm or 'non renseigné'}
 Province : {company.province or 'non renseignée'}
 Activité ARSP : {company.sector or 'non renseignée'}

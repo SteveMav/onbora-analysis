@@ -7,6 +7,7 @@ components so the Django worker can persist every attempt before presenting it.
 from __future__ import annotations
 
 import hashlib
+from html.parser import HTMLParser
 import ipaddress
 import json
 import re
@@ -33,6 +34,7 @@ class CompanySeed:
     rccm: str = ""
     tax_number: str = ""
     address: str = ""
+    email: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ def meaningful_tokens(value: str) -> set[str]:
         "avec", "dans", "pour", "sarl", "sarlu", "sprl", "sas", "societe",
         "entreprise", "company", "congo", "republique", "democratique", "group",
         "groupe", "holding", "international", "service", "services", "solution",
-        "solutions", "general",
+        "solutions", "general", "specifie", "renseigne", "inconnu",
     }
     return {token for token in normalize(value).split() if len(token) >= 4 and token not in ignored}
 
@@ -92,22 +94,54 @@ def company_from_snapshot(snapshot: dict[str, Any]) -> CompanySeed:
         rccm=clean_excel_text(value.get("rccm") or ""),
         tax_number=clean_excel_text(value.get("tax_number") or ""),
         address=clean_excel_text(value.get("address_arsp") or ""),
+        email=clean_excel_text(value.get("email_arsp") or ""),
     )
 
 
+def company_names(company: CompanySeed) -> list[str]:
+    return list(dict.fromkeys(
+        normalize(name) for name in [*company_name_variants(company.legal_name), company.trade_name]
+        if len(normalize(name)) >= 5
+    ))
+
+
+def company_website_domain(company: CompanySeed) -> str:
+    """Use a company-specific ARSP email domain, never a shared mail provider."""
+    match = re.fullmatch(r"[^\s@]+@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", company.email)
+    if not match:
+        return ""
+    domain = match.group(1).casefold().rstrip(".")
+    label = domain.split(".")[0]
+    # Require a distinctive name match as well as the structured seed contact.
+    brands = {name.replace(" ", "") for name in company_names(company)}
+    if len(label) < 5 or label not in brands:
+        return ""
+    return domain
+
+
+def is_seed_website(url: str, company: CompanySeed) -> bool:
+    domain = company_website_domain(company)
+    host = (urllib.parse.urlsplit(url).hostname or "").casefold().rstrip(".")
+    return bool(domain and (host == domain or host.endswith("." + domain)))
+
+
 def build_query_plan(company: CompanySeed) -> list[QuerySpec]:
-    """Build several focused queries instead of one over-constrained query."""
+    """Resolve the company before looking for commercial opportunities."""
     if not company.legal_name:
         raise ValueError("La dénomination de l’entreprise est requise.")
     names = company_name_variants(company.legal_name)
     name = f'"{names[0]}"'
     candidates = [QuerySpec("identity", name)]
     if company.rccm:
-        candidates.insert(0, QuerySpec("registry", f'{name} "{company.rccm}"'))
+        candidates.insert(0, QuerySpec("registry", f'"{company.rccm}"'))
+        candidates.insert(1, QuerySpec("registry_name", f'{name} "{company.rccm}"'))
+    candidates.append(QuerySpec("arsp", f"site:arsp.cd {name}"))
     if company.province:
         candidates.append(QuerySpec("location", f"{name} {company.province}"))
     candidates.append(QuerySpec("sector", f"{name} activité entreprise secteur"))
     sector_words = " ".join(sorted(meaningful_tokens(company.sector))[:4])
+    if normalize(company.sector) in {"non specifie", "non renseigne", "inconnu"}:
+        sector_words = ""
     if sector_words:
         candidates.append(QuerySpec("activity", f"{name} {sector_words}"))
     if len(names) > 1:
@@ -115,15 +149,9 @@ def build_query_plan(company: CompanySeed) -> list[QuerySpec]:
         candidates.append(QuerySpec("brand", brand))
         if company.province:
             candidates.append(QuerySpec("brand_location", f"{brand} {company.province}"))
-    if getattr(settings, "ONBORA_LEAD_QUALIFICATION_ENABLED", True):
-        candidates.extend((
-            QuerySpec("lead_network", f'{name} agences succursales bureaux dépôts'),
-            QuerySpec("lead_customer", f'{name} application paiement clients plateforme'),
-            QuerySpec("lead_mobility", f'{name} flotte véhicules équipements logistique'),
-            QuerySpec("lead_collaboration", f'{name} Microsoft 365 Teams télétravail collaboration'),
-            QuerySpec("lead_cloud", f'{name} cloud datacenter serveurs sauvegarde'),
-        ))
-
+        candidates.append(QuerySpec("brand_country", f"{brand} RDC Congo"))
+    if domain := company_website_domain(company):
+        candidates.append(QuerySpec("website", f"site:{domain}"))
     seen: set[str] = set()
     result: list[QuerySpec] = []
     for candidate in candidates:
@@ -132,6 +160,18 @@ def build_query_plan(company: CompanySeed) -> list[QuerySpec]:
             seen.add(key)
             result.append(candidate)
     return result
+
+
+def build_lead_query_plan(company: CompanySeed) -> list[QuerySpec]:
+    """Run enrichment only after a page has established company identity."""
+    name = f'"{company_name_variants(company.legal_name)[0]}"'
+    return [
+        QuerySpec("lead_network", f'{name} agences succursales bureaux dépôts'),
+        QuerySpec("lead_customer", f'{name} application paiement clients plateforme'),
+        QuerySpec("lead_mobility", f'{name} flotte véhicules équipements logistique'),
+        QuerySpec("lead_collaboration", f'{name} Microsoft 365 Teams télétravail collaboration'),
+        QuerySpec("lead_cloud", f'{name} cloud datacenter serveurs sauvegarde'),
+    ]
 
 
 def canonicalize_url(url: str) -> str:
@@ -156,7 +196,7 @@ def canonicalize_url(url: str) -> str:
 
 def source_classification(url: str, company: CompanySeed) -> tuple[str, str]:
     host = (urllib.parse.urlsplit(url).hostname or "").casefold().removeprefix("www.")
-    if host.endswith((".gouv.cd", ".gov.cd")) or host in {"arsp.cd", "guichetunique.cd"}:
+    if host.endswith((".gouv.cd", ".gov.cd", ".arsp.cd")) or host in {"arsp.cd", "guichetunique.cd"}:
         return "registry", "independent"
     if host.endswith(("facebook.com", "linkedin.com", "instagram.com", "x.com", "twitter.com", "youtube.com")):
         return "social", "discovery_only"
@@ -164,7 +204,8 @@ def source_classification(url: str, company: CompanySeed) -> tuple[str, str]:
         return "directory", "discovery_only"
     host_words = set(re.findall(r"[a-z0-9]+", host))
     if host_words & meaningful_tokens(company.legal_name):
-        return "official", "first_party"
+        # A matching hostname is a lead, not proof that the company owns it.
+        return "other", "discovery_only"
     return "other", "independent"
 
 
@@ -180,6 +221,10 @@ def rank_search_hit(title: str, snippet: str, url: str, company: CompanySeed) ->
         score += 10
     elif trade_match:
         score += 7
+    elif any(f" {name} " in f" {searchable} " for name in company_names(company)):
+        score += 7
+    if is_seed_website(url, company):
+        score += 15
     name_tokens = meaningful_tokens(company.legal_name)
     matched_name_tokens = name_tokens & words
     score += min(6, len(matched_name_tokens) * 2)
@@ -205,76 +250,81 @@ def rank_search_hit(title: str, snippet: str, url: str, company: CompanySeed) ->
 
 
 def relevant_excerpt(text: str, company: CompanySeed, limit: int = 1600) -> str:
-    sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+|\n+", text) if sentence.strip()]
-    company_terms = meaningful_tokens(" ".join((
-        company.legal_name, company.trade_name, company.sector, company.province, company.address,
-    )))
-    opportunity_terms = meaningful_tokens(
-        "agences succursales bureaux dépôts entrepôts implantations multisite application plateforme "
-        "paiement encaissement clients hotline notifications flotte véhicules camions engins logistique "
-        "livraison équipements machines télémétrie géolocalisation terrain collaboration télétravail "
-        "visioconférence cybersécurité vulnérabilités serveurs datacenter cloud sauvegarde reprise"
-        " mines extraction transport transit commerce distribution banque assurance construction immobilier"
-        " industrie énergie télécommunications informatique santé pharmacie éducation agriculture hôtellerie"
-        " tourisme conseil audit médias publicité"
-    )
-    company_ranked = sorted(
-        enumerate(sentences),
-        key=lambda item: (len(meaningful_tokens(item[1]) & company_terms), -item[0]),
-        reverse=True,
-    )
-    chosen_indexes = [
-        index for index, sentence in company_ranked
-        if meaningful_tokens(sentence) & company_terms
-    ][:3]
-    opportunity_ranked = sorted(
-        enumerate(sentences),
-        key=lambda item: (len(meaningful_tokens(item[1]) & opportunity_terms), -item[0]),
-        reverse=True,
-    )
-    for index, sentence in opportunity_ranked:
-        if index in chosen_indexes or not meaningful_tokens(sentence) & opportunity_terms:
+    # Keep facts near an actual name mention. A generic page can describe many
+    # other companies, whose activities must not enter the summary packet.
+    names = company_names(company)
+    passages = [part.strip() for part in text.splitlines() if part.strip()]
+    chosen: list[str] = []
+    for passage in passages:
+        normalized = f" {normalize(passage)} "
+        if not any(f" {name} " in normalized for name in names):
             continue
-        chosen_indexes.append(index)
-        if len(chosen_indexes) >= 6:
+        if len(passage) > 1200:
+            match = None
+            for name in [*company_name_variants(company.legal_name), company.trade_name]:
+                if name and (match := re.search(re.escape(name), passage, re.IGNORECASE)):
+                    break
+            if match:
+                passage = passage[max(0, match.start() - 150):match.end() + 900]
+        if passage not in chosen:
+            chosen.append(passage)
+        if len("\n\n".join(chosen)) >= limit:
             break
-    chosen = [sentences[index] for index in chosen_indexes]
-    excerpt = "\n\n".join(chosen) if chosen else "Aucun passage clairement pertinent n’a été extrait."
-    return excerpt[:limit].rstrip()
+    return "\n\n".join(chosen)[:limit].rstrip()
 
 
 def assess_text(company: CompanySeed, title: str, text: str, url: str) -> PageAssessment:
-    searchable = normalize(f"{title}\n{text}")
-    words = set(searchable.split())
     reasons: list[str] = []
     score = 0
     legal = normalize(company.legal_name)
     trade = normalize(company.trade_name)
-    legal_match = bool(legal and legal in searchable)
-    trade_match = bool(trade and len(trade) >= 5 and trade in searchable)
+    brands = [name for name in company_names(company) if name != legal]
+    passages = [normalize(part) for part in text.splitlines() if part.strip()]
+    matches = [part for part in passages if (
+        legal and f" {legal} " in f" {part} "
+    ) or (
+        any(f" {brand} " in f" {part} " for brand in brands)
+    )]
+    nearby = max(matches, key=lambda part: (
+        int(bool(company.rccm and normalize(company.rccm) in part))
+        + int(bool(company.tax_number and normalize(company.tax_number) in part)),
+        int(bool(legal and f" {legal} " in f" {part} ")),
+    ), default="")
+    legal_match = bool(legal and f" {legal} " in f" {nearby} ")
+    trade_match = bool(trade and len(trade) >= 5 and f" {trade} " in f" {nearby} ")
+    brand_match = next((brand for brand in brands if f" {brand} " in f" {nearby} "), "")
+    if len(nearby) > 900:
+        matched_name = legal if legal_match else brand_match
+        position = nearby.find(matched_name)
+        nearby = nearby[max(0, position - 250):position + len(matched_name) + 350]
+    nearby_words = set(nearby.split())
     if legal_match:
         score += 5
         reasons.append("nom légal trouvé")
-    elif trade_match:
+    elif trade_match or brand_match:
         score += 3
         reasons.append("nom commercial trouvé")
 
     strong_match = False
+    if (legal_match or brand_match) and is_seed_website(url, company):
+        score += 5
+        strong_match = True
+        reasons.append("domaine du contact ARSP concordant")
     for label, value in (("RCCM", company.rccm), ("numéro fiscal", company.tax_number)):
-        if value and normalize(value) in searchable:
+        if value and f" {normalize(value)} " in f" {nearby} ":
             score += 5
             strong_match = True
             reasons.append(f"{label} exact trouvé")
     normalized_address = normalize(company.address)
-    if len(normalized_address) >= 12 and normalized_address in searchable:
+    if len(normalized_address) >= 12 and f" {normalized_address} " in f" {nearby} ":
         score += 3
         strong_match = True
         reasons.append("adresse ARSP concordante")
-    if company.province and normalize(company.province) in searchable:
+    if company.province and f" {normalize(company.province)} " in f" {nearby} ":
         score += 1
         reasons.append("province ou ville concordante")
     sector_tokens = meaningful_tokens(company.sector)
-    matched_sector = sector_tokens & words
+    matched_sector = sector_tokens & nearby_words
     if sector_tokens and len(matched_sector) >= max(1, len(sector_tokens) // 2):
         score += 2
         reasons.append("activité concordante")
@@ -282,23 +332,24 @@ def assess_text(company: CompanySeed, title: str, text: str, url: str) -> PageAs
         score += 1
         reasons.append("activité partiellement concordante")
 
-    if strong_match and (legal_match or trade_match):
+    if strong_match and (legal_match or trade_match or brand_match):
         verdict = "Pertinente"
-    elif legal_match and score >= 6:
-        verdict = "Pertinente"
-    elif legal_match or (trade_match and score >= 4):
+    elif legal_match or trade_match or brand_match:
         verdict = "À vérifier"
     else:
         verdict = "Hors sujet probable"
         reasons.append("pas assez d’éléments pour relier la page à l’entreprise")
     source_type, relationship = source_classification(url, company)
+    seed_website = is_seed_website(url, company) and bool(legal_match or brand_match)
+    if seed_website:
+        source_type, relationship = "official", "first_party"
     return PageAssessment(
         verdict=verdict,
         score=score,
         source_type=source_type,
         relationship=relationship,
         reasons=tuple(reasons),
-        excerpt=relevant_excerpt(text, company),
+        excerpt=text[:1600].rstrip() if seed_website else relevant_excerpt(text, company),
         final_url=url,
     )
 
@@ -323,6 +374,76 @@ class _PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, file_pointer, code, message, headers, new_url):
         validate_public_url(new_url)
         return super().redirect_request(request, file_pointer, code, message, headers, new_url)
+
+
+class _RowText(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        value = data.strip()
+        if value:
+            self.parts.append(value)
+
+
+class _PageTitle(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_title = False
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self.in_title = True
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self.in_title = False
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.parts.append(data)
+
+
+def _is_arsp_page(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").casefold()
+    return host == "arsp.cd" or host.endswith(".arsp.cd")
+
+
+def _arsp_matching_rows(html: str, company: CompanySeed) -> str:
+    """Extract matching rows from ARSP's large, sometimes malformed tables."""
+    names = [name.casefold() for name in company_name_variants(company.legal_name)]
+    if company.trade_name:
+        names.append(company.trade_name.casefold())
+    lower = html.casefold()
+    rows: list[str] = []
+    seen: set[tuple[int, int]] = set()
+    for name in names:
+        if len(name) < 5:
+            continue
+        start = 0
+        while len(rows) < 12:
+            position = lower.find(name, start)
+            if position < 0:
+                break
+            start = position + len(name)
+            left = lower.rfind("</tr>", 0, position) + len("</tr>")
+            right = lower.find("</tr>", position)
+            if right < 0 or right - left > 12_000:
+                continue
+            bounds = (left, right)
+            if bounds in seen:
+                continue
+            seen.add(bounds)
+            parser = _RowText()
+            parser.feed(html[left:right])
+            row = " | ".join(parser.parts)
+            if name in row.casefold():
+                rows.append(row)
+    rccm = normalize(company.rccm)
+    matching_rccm = [row for row in rows if rccm and f" {rccm} " in f" {normalize(row)} "]
+    return "\n".join(matching_rccm or rows)
 
 
 class SearxngClient:
@@ -397,14 +518,28 @@ class PageFetcher:
                 content_type = response.headers.get_content_type()
                 if content_type not in {"text/html", "application/xhtml+xml"}:
                     raise ValueError(f"format non analysé : {content_type}")
-                raw = response.read(settings.ONBORA_MAX_PAGE_BYTES + 1)
-                if len(raw) > settings.ONBORA_MAX_PAGE_BYTES:
+                max_bytes = settings.ONBORA_MAX_PAGE_BYTES
+                if _is_arsp_page(final_url):
+                    max_bytes = max(max_bytes, settings.ONBORA_MAX_ARSP_PAGE_BYTES)
+                raw = response.read(max_bytes + 1)
+                if len(raw) > max_bytes:
                     raise ValueError("page trop volumineuse")
                 charset = response.headers.get_content_charset() or "utf-8"
                 html = raw.decode(charset, errors="replace")
-            text = extract(html, url=final_url, include_comments=False, include_tables=False, favor_precision=True)
+            text = _arsp_matching_rows(html, company) if _is_arsp_page(final_url) else ""
+            if not text:
+                text = extract(html, url=final_url, include_comments=False, include_tables=True, favor_precision=True)
             if not text or len(text.strip()) < 80:
                 raise ValueError("aucun texte principal exploitable")
+            # Wix and similar sites often render their brand in an image or
+            # footer removed by extraction. Only trust the fetched HTML title,
+            # and only on the company-specific domain in the ARSP contact.
+            if is_seed_website(final_url, company) and not _is_arsp_page(final_url):
+                parser = _PageTitle()
+                parser.feed(html)
+                title = clean_excel_text(" ".join(parser.parts))[:500]
+                if title:
+                    text = title + "\n" + text
             assessment = assess_text(company, hit.title, text, final_url)
             return PageAssessment(
                 **{**assessment.__dict__, "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()}

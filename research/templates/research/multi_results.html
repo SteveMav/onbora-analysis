@@ -1,0 +1,64 @@
+<section class="multi-progress" data-active="{{ active|yesno:'true,false' }}" aria-label="Avancement du lot">
+  <div><strong>{{ finished }} / {{ total }}</strong><span>recherche{{ total|pluralize }} terminée{{ total|pluralize }}</span></div>
+  <progress max="{{ total }}" value="{{ finished }}">{{ finished }} sur {{ total }}</progress>
+  <p>{% if active %}Les recherches continuent. Les fiches se mettent à jour automatiquement.{% else %}{{ successful }} résultat{{ successful|pluralize }} disponible{{ successful|pluralize }}{% if failed %} · {{ failed }} recherche{{ failed|pluralize }} interrompue{{ failed|pluralize }}{% endif %}.{% endif %}</p>
+</section>
+<div class="multi-report-list">
+{% for card in cards %}
+<article class="panel multi-report" aria-labelledby="company-{{ card.position }}">
+  <header class="multi-report-header">
+    <span class="multi-number">{{ card.position|stringformat:"02d" }}</span>
+    <div><h2 id="company-{{ card.position }}">{{ card.name }}</h2><p>{{ card.seed.province|default:"Province non renseignée" }}{% if card.seed.rccm %} · {{ card.seed.rccm }}{% endif %}</p></div>
+    <span class="status status-{{ card.run.state }}">{% if card.successful %}Terminée{% else %}{{ card.run.get_state_display }}{% endif %}</span>
+  </header>
+  {% if card.active %}
+  <div class="multi-waiting"><span class="spinner" aria-hidden="true"></span><p>{% if card.run.state == 'queued' %}En attente de démarrage.{% else %}Recherche des sources et préparation du résumé…{% endif %}</p></div>
+  {% elif not card.successful %}
+  <div class="alert warning"><strong>Cette recherche n’a pas abouti.</strong>{% for limitation in card.run.limitations %}<p>{{ limitation }}</p>{% endfor %}</div>
+  {% else %}
+  <div class="multi-report-body">
+    <section class="multi-findings">
+      <h3>Ce qu’on a trouvé</h3>
+      {% if card.summary.status == 'complete' %}
+        <p class="multi-overview">{{ card.summary.overview.text }}</p>
+        <div class="citation-list">{% for source in card.summary.overview.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>
+        {% for fact in card.summary.key_facts %}
+        <div class="multi-fact"><p>{{ fact.text }}</p><div class="citation-list">{% for source in fact.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div></div>
+        {% endfor %}
+        {% if card.summary.contradictions %}<div class="multi-caution"><strong>Informations contradictoires</strong>{% for fact in card.summary.contradictions %}<p>{{ fact.text }}</p><div class="citation-list">{% for source in fact.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>{% endfor %}</div>{% endif %}
+        {% if card.summary.gaps %}<div class="multi-gaps"><strong>À vérifier</strong><ul>{% for gap in card.summary.gaps %}<li>{{ gap }}</li>{% endfor %}</ul></div>{% endif %}
+      {% else %}
+        <p class="multi-caution"><strong>Résumé IA indisponible.</strong> {{ card.summary.message|default:"La recherche n’a pas produit de résumé exploitable." }}</p>
+        {% for link in card.links|slice:":2" %}<div class="multi-fact"><small>Extrait collecté · {{ link.verdict }}</small><p>{{ link.relevant_excerpt|truncatechars:600 }}</p></div>{% endfor %}
+        {% if not card.links %}<p class="muted">Aucune page vérifiée n’a pu être reliée à cette entreprise.</p>{% endif %}
+      {% endif %}
+      {% if card.links %}
+      <div class="multi-sources"><h4>Sources retenues · {{ card.links|length }}</h4>
+        {% for link in card.links %}<a href="{{ link.evidence.observed_url }}" target="_blank" rel="noopener noreferrer"><span>[{{ link.evidence_id }}] {{ link.evidence.title|default:link.evidence.publisher }}</span><small>{{ link.evidence.observed_url }}</small></a>{% endfor %}
+      </div>
+      {% endif %}
+    </section>
+    <section class="multi-offers">
+      <h3>Offres à explorer</h3>
+      <p class="multi-offer-note">Des pistes à confirmer avec l’entreprise.</p>
+      {% for journey in card.opportunities %}
+      <div class="multi-opportunity">
+        <span class="lead-verdict">{{ journey.verdict_label }}</span>
+        <h4>{% for offer in journey.offers %}{{ offer.name }}{% if not forloop.last %} · {% endif %}{% endfor %}</h4>
+        <p>{{ journey.reason }}</p>
+        {% if not journey.sources %}<p class="lead-seed-note">Hypothèse fondée sur l’activité déclarée dans l’ARSP.</p>{% endif %}
+        <div class="citation-list">{% for source in journey.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>
+        {% if journey.next_question %}<p class="multi-next-question"><strong>À leur demander</strong>{{ journey.next_question }}</p>{% endif %}
+      </div>
+      {% empty %}<p class="muted">{% if card.qualification.status == 'unavailable' %}Le catalogue d’offres est indisponible.{% else %}Les informations disponibles ne suffisent pas à proposer une offre précise.{% endif %}</p>{% endfor %}
+    </section>
+  </div>
+  {% endif %}
+  <footer class="multi-report-footer">
+    <span>{% if card.successful %}Identité {{ card.run.get_identity_status_display|default:"à vérifier" }}{% if card.summary.status == 'complete' and card.run.ai_model %} · {{ card.run.ai_model }}{% endif %}{% endif %}</span>
+    <a href="{% url 'web-run-detail' card.run.pk %}">Voir le détail de la recherche ↗</a>
+  </footer>
+</article>
+{% endfor %}
+</div>
+<textarea id="batch-report-text" class="multi-export-text" aria-label="Texte des résumés et liens" readonly hidden>{{ report_text }}</textarea>

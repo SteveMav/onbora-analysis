@@ -11,7 +11,7 @@
   </div>
   <div class="state-block">
     <span class="status status-{{ run.state }}">{{ run.get_state_display }}</span>
-    {% if run.identity_status %}<strong class="identity-large">Identité {{ run.get_identity_status_display }}</strong>{% endif %}
+    {% if run.identity_status == "not_found" %}<strong class="identity-large">Identité non vérifiée par la recherche</strong>{% elif run.identity_status %}<strong class="identity-large">Identité {{ run.get_identity_status_display }}</strong>{% endif %}
     <span>Couverture {{ run.get_coverage_display|lower }}</span>
   </div>
 </section>
@@ -33,7 +33,9 @@
     <div><strong>{{ run.result_summary.query_count }}</strong><span>requêtes ciblées</span></div>
     <div><strong>{{ run.result_summary.returned_count }}</strong><span>liens retournés</span></div>
     <div><strong>{{ run.result_summary.unique_count }}</strong><span>URLs uniques</span></div>
-    <div><strong>{{ run.result_summary.captured_count }}</strong><span>pages conservées</span></div>
+    <div><strong>{{ run.result_summary.analyzed_count }}</strong><span>pages tentées</span></div>
+    <div><strong>{{ run.result_summary.captured_count }}</strong><span>pages lues</span></div>
+    <div><strong>{{ relevant_evidence|length }}</strong><span>preuves retenues</span></div>
   </section>
 {% endif %}
 
@@ -111,9 +113,9 @@
 <section class="panel ai-panel">
   <div class="panel-heading">
     <div><p class="eyebrow">Lecture assistée</p><h2>Résumé IA sourcé</h2></div>
-    {% if run.ai_model %}<span class="model-badge">{{ run.ai_model }}</span>{% endif %}
+    {% if ai_summary.status == "complete" and run.ai_model %}<span class="model-badge">{{ run.ai_model }}</span>{% endif %}
   </div>
-  <p class="section-intro">Gemini résume uniquement les preuves récupérées par Onbora. Clique sur les sources pour vérifier chaque affirmation.</p>
+  <p class="section-intro">L’IA résume uniquement les preuves récupérées par Onbora. Clique sur les sources pour vérifier chaque affirmation.</p>
   {% if ai_summary.status == "complete" %}
     <div class="ai-overview">
       <p>{{ ai_summary.overview.text }}</p>
@@ -148,13 +150,13 @@
     <div><p class="eyebrow">Inventaire complet</p><h2>Toutes les sources trouvées</h2></div>
     <span class="count">{{ discovered_sources|length }}</span>
   </div>
-  <p class="section-intro">Aucun lien retourné par le moteur n’est caché ici. L’étiquette d’analyse est seulement indicative : ouvre chaque source pour faire ta propre vérification.</p>
+  <p class="section-intro">Ces URL ont été découvertes, mais seules les pages lues et reliées à l’entreprise alimentent le résumé. L’étiquette d’analyse est indicative : ouvre chaque source pour la vérifier.</p>
   <div class="source-inventory">
     {% for source in discovered_sources %}
       <article class="source-row">
         <div class="source-main">
           <div class="source-labels">
-            <span class="provider provider-{{ source.attempt.provider }}">{% if source.attempt.provider == "gemini" %}Gemini Search{% else %}SearXNG{% endif %}</span>
+            <span class="provider provider-{{ source.attempt.provider }}">{% if source.attempt.provider == "gemini" %}Gemini Search{% elif source.attempt.provider == "openai" %}OpenAI Search{% else %}SearXNG{% endif %}</span>
             <span class="source-category">{{ source.attempt.category }}</span>
             {% if source.evaluation %}<span class="verdict">{{ source.evaluation.verdict }}</span>{% else %}<span class="not-analyzed">Non analysée</span>{% endif %}
           </div>

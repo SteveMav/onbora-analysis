@@ -1,0 +1,23 @@
+<p class="multi-list-count muted">{{ page_obj.paginator.count }} entreprise{{ page_obj.paginator.count|pluralize }}{% if query %} pour « {{ query }} »{% endif %}</p>
+<div class="multi-company-list">
+  {% for record in page_obj %}
+  <label class="multi-company">
+    <input type="checkbox" name="record_ids" value="{{ record.pk }}" form="batch-create" data-company-name="{{ record.display_legal_name }}">
+    <span>
+      <strong>{{ record.display_legal_name }}</strong>
+      <span class="multi-company-meta">{{ record.raw_data.Province|default:"Province non renseignée" }} · Dossier {{ record.dossier_number }}</span>
+      {% if record.raw_data.RCCM %}<small>RCCM {{ record.raw_data.RCCM }}</small>{% endif %}
+      {% if record.raw_data.Activité %}<small>{{ record.raw_data.Activité|truncatechars:100 }}</small>{% endif %}
+    </span>
+  </label>
+  {% empty %}<p class="empty">Aucune entreprise trouvée. Essaie un autre nom ou un numéro de dossier.</p>{% endfor %}
+</div>
+{% if page_obj.paginator.num_pages > 1 %}
+<nav class="pagination" aria-label="Pages des entreprises">
+  <span class="pagination-summary">Page {{ page_obj.number }} sur {{ page_obj.paginator.num_pages }}</span>
+  <div class="pagination-links">
+    {% if page_obj.has_previous %}<a class="pagination-link" href="?q={{ query|urlencode }}&amp;page={{ page_obj.previous_page_number }}">Précédente</a>{% endif %}
+    {% if page_obj.has_next %}<a class="pagination-link" href="?q={{ query|urlencode }}&amp;page={{ page_obj.next_page_number }}">Suivante</a>{% endif %}
+  </div>
+</nav>
+{% endif %}

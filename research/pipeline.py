@@ -10,6 +10,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .gemini import GeminiResearchClient, GeminiServiceError, SummaryEvidence
+from .openai_research import OpenAIResearchClient
 from .lead_qualification import LeadEvidence, build_lead_qualification
 from .models import EvidenceCapture, ResearchEvent, ResearchRun, RunEvidence, SourceAttempt
 from .sector_segmentation import SectorEvidence, build_sector_segmentation
@@ -17,9 +18,11 @@ from .web_research import (
     PageFetcher,
     SearchHit,
     SearxngClient,
+    build_lead_query_plan,
     build_query_plan,
     canonicalize_url,
     company_from_snapshot,
+    company_website_domain,
     rank_search_hit,
 )
 
@@ -35,7 +38,7 @@ def _identity_status(evidence: list[RunEvidence]) -> str:
     for item in usable:
         joined = " ".join(item.reasons).casefold()
         has_name = "nom légal" in joined or "nom commercial" in joined
-        has_strong_attribute = any(value in joined for value in ("rccm", "numéro fiscal", "adresse arsp"))
+        has_strong_attribute = any(value in joined for value in ("rccm", "numéro fiscal", "adresse arsp", "domaine du contact arsp"))
         if has_name and has_strong_attribute:
             return "confirmed"
     independent_publishers = {
@@ -52,17 +55,73 @@ def _identity_status(evidence: list[RunEvidence]) -> str:
     return "ambiguous"
 
 
+def _capture_hit(run, hit, position, company, page_fetcher, limitations):
+    assessment = page_fetcher.analyze(hit, company)
+    if assessment.error:
+        limitations.append(f"Source inaccessible : {_publisher(hit.url) or hit.url}")
+        SourceAttempt.objects.create(
+            research_run=run,
+            provider=hit.provider,
+            query=hit.query,
+            category=hit.category,
+            url=hit.url,
+            title=hit.title,
+            search_rank=hit.rank,
+            relevance_score=hit.discovery_score,
+            status=SourceAttempt.Status.UNAVAILABLE,
+            reason=assessment.error,
+        )
+        return None
+    canonical_url = canonicalize_url(assessment.final_url)
+    evidence, _created = EvidenceCapture.objects.get_or_create(
+        canonical_url=canonical_url,
+        content_hash=assessment.content_hash,
+        defaults={
+            "observed_url": assessment.final_url,
+            "title": hit.title,
+            "publisher": _publisher(assessment.final_url),
+            "source_type": assessment.source_type,
+            "relationship": assessment.relationship,
+            "access_status": EvidenceCapture.AccessStatus.ACCESSIBLE,
+        },
+    )
+    run_evidence, _linked = RunEvidence.objects.get_or_create(
+        research_run=run,
+        evidence=evidence,
+        defaults={
+            "position": position,
+            "relevant_excerpt": assessment.excerpt,
+            "relevance_score": assessment.score,
+            "verdict": assessment.verdict,
+            "reasons": list(assessment.reasons),
+        },
+    )
+    SourceAttempt.objects.create(
+        research_run=run,
+        provider=hit.provider,
+        query=hit.query,
+        category=hit.category,
+        url=assessment.final_url,
+        title=hit.title,
+        search_rank=hit.rank,
+        relevance_score=assessment.score,
+        status=SourceAttempt.Status.ACCESSIBLE,
+        reason=assessment.verdict,
+    )
+    return run_evidence
+
+
 def execute_research_run(
     run: ResearchRun,
     *,
     search_client: SearxngClient | None = None,
     page_fetcher: PageFetcher | None = None,
-    ai_client: GeminiResearchClient | None = None,
+    ai_client: GeminiResearchClient | OpenAIResearchClient | None = None,
 ) -> ResearchRun:
     """Execute discovery, ranking, bounded fetching and evidence persistence."""
     search_client = search_client or SearxngClient()
     page_fetcher = page_fetcher or PageFetcher()
-    ai_client = ai_client or GeminiResearchClient.from_settings()
+    ai_client = ai_client or OpenAIResearchClient.from_settings() or GeminiResearchClient.from_settings()
     company = company_from_snapshot(run.seed_snapshot)
     plan = build_query_plan(company)
     limitations: list[str] = []
@@ -72,95 +131,43 @@ def execute_research_run(
     ai_search_attempted = False
     ai_search_count = 0
 
-    for spec in plan:
-        run.refresh_from_db(fields=["cancellation_requested"])
-        if run.cancellation_requested:
-            return _cancel_run(run)
-        try:
-            hits = search_client.search(spec)
-        except RuntimeError:
-            failed_categories.append(spec.category)
-            limitations.append(f"Recherche {spec.category} indisponible")
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider="searxng",
-                query=spec.query,
-                category=spec.category,
-                status=SourceAttempt.Status.UNAVAILABLE,
-                reason="Le moteur de recherche n’a pas répondu pour cette requête.",
-            )
-            continue
-        for engine, reason in getattr(search_client, "last_warnings", ()):
-            engine_warnings.append(f"{engine}: {reason}")
-            limitations.append(f"Moteur {engine} indisponible : {reason}")
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider="searxng",
-                query=spec.query,
-                category=f"engine:{engine}"[:32],
-                status=SourceAttempt.Status.UNAVAILABLE,
-                reason=reason,
-            )
-        for hit in hits:
-            score = rank_search_hit(hit.title, hit.snippet, hit.url, company)
-            scored = SearchHit(**{**hit.__dict__, "discovery_score": score})
-            all_hits.append(scored)
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider=hit.provider,
-                query=hit.query,
-                category=hit.category,
-                url=hit.url,
-                title=hit.title,
-                snippet=hit.snippet[:2000],
-                search_rank=hit.rank,
-                relevance_score=score,
-                status=SourceAttempt.Status.RETURNED,
-            )
-
-    searx_relevant_urls: set[str] = set()
-    for hit in all_hits:
-        if hit.discovery_score < 2:
-            continue
-        try:
-            searx_relevant_urls.add(canonicalize_url(hit.url))
-        except ValueError:
-            continue
-    searx_relevant_count = len(searx_relevant_urls)
-    fallback_reasons: list[str] = []
-    if failed_categories:
-        fallback_reasons.append(f"requêtes indisponibles : {', '.join(failed_categories)}")
-    if engine_warnings:
-        fallback_reasons.append(f"moteurs bloqués ou indisponibles : {'; '.join(engine_warnings[:4])}")
-    if searx_relevant_count < settings.ONBORA_GEMINI_FALLBACK_MIN_RESULTS:
-        fallback_reasons.append(
-            f"seulement {searx_relevant_count} résultat(s) SearXNG suffisamment pertinent(s)"
-        )
-
-    if ai_client and fallback_reasons:
-        ai_search_attempted = True
-        reason = " ; ".join(fallback_reasons)
-        try:
-            ai_hits = ai_client.search(company, reason)
-        except GeminiServiceError as error:
-            limitations.append(str(error))
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider="gemini",
-                query=f"Complément Gemini pour {company.legal_name}",
-                category="ai_fallback",
-                status=SourceAttempt.Status.UNAVAILABLE,
-                reason=str(error),
-            )
-        else:
-            ai_search_count = len(ai_hits)
-            for hit in ai_hits:
+    def collect_queries(specs) -> bool:
+        for spec in specs:
+            run.refresh_from_db(fields=["cancellation_requested"])
+            if run.cancellation_requested:
+                return False
+            try:
+                hits = search_client.search(spec)
+            except RuntimeError:
+                failed_categories.append(spec.category)
+                limitations.append(f"Recherche {spec.category} indisponible")
+                SourceAttempt.objects.create(
+                    research_run=run,
+                    provider="searxng",
+                    query=spec.query,
+                    category=spec.category,
+                    status=SourceAttempt.Status.UNAVAILABLE,
+                    reason="Le moteur de recherche n’a pas répondu pour cette requête.",
+                )
+                continue
+            for engine, reason in getattr(search_client, "last_warnings", ()):
+                engine_warnings.append(f"{engine}: {reason}")
+                limitations.append(f"Moteur {engine} indisponible : {reason}")
+                SourceAttempt.objects.create(
+                    research_run=run,
+                    provider="searxng",
+                    query=spec.query,
+                    category=f"engine:{engine}"[:32],
+                    status=SourceAttempt.Status.UNAVAILABLE,
+                    reason=reason,
+                )
+            for hit in hits:
                 score = rank_search_hit(hit.title, hit.snippet, hit.url, company)
                 scored = SearchHit(**{**hit.__dict__, "discovery_score": score})
                 all_hits.append(scored)
                 SourceAttempt.objects.create(
                     research_run=run,
-                    provider="gemini",
+                    provider=hit.provider,
                     query=hit.query,
                     category=hit.category,
                     url=hit.url,
@@ -169,8 +176,28 @@ def execute_research_run(
                     search_rank=hit.rank,
                     relevance_score=score,
                     status=SourceAttempt.Status.RETURNED,
-                    reason="Source découverte avec Gemini et Google Search.",
                 )
+        return True
+
+    if not collect_queries(plan):
+        return _cancel_run(run)
+
+    # A structured registry contact can lead directly to the official site even
+    # when search engines omit it. It must still pass public-URL and page checks.
+    if domain := company_website_domain(company):
+        url = f"https://{domain}/"
+        hit = SearchHit(
+            query="Domaine du contact ARSP", category="seed_website", rank=1,
+            title=f"Site candidat de {company.legal_name}", url=url, snippet="",
+            discovery_score=rank_search_hit(company.legal_name, "", url, company), provider="arsp",
+        )
+        all_hits.append(hit)
+        SourceAttempt.objects.create(
+            research_run=run, provider=hit.provider, query=hit.query, category=hit.category,
+            url=url, title=hit.title, search_rank=1, relevance_score=hit.discovery_score,
+            status=SourceAttempt.Status.RETURNED,
+            reason="Domaine issu de l’adresse email du registre ARSP ; propriété à vérifier sur la page.",
+        )
 
     deduplicated: dict[str, SearchHit] = {}
     for hit in all_hits:
@@ -197,6 +224,146 @@ def execute_research_run(
             break
 
     selected_urls = {canonicalize_url(item.url) for item in selected}
+    captured: list[RunEvidence] = []
+    for position, hit in enumerate(selected, start=1):
+        run.refresh_from_db(fields=["cancellation_requested"])
+        if run.cancellation_requested:
+            return _cancel_run(run)
+        if evidence := _capture_hit(run, hit, position, company, page_fetcher, limitations):
+            captured.append(evidence)
+
+    rescue_count = 0
+    if not any(item.verdict == "Pertinente" for item in captured):
+        for hit in ranked:
+            url = canonicalize_url(hit.url)
+            publisher = _publisher(hit.url)
+            if url in selected_urls or hit.discovery_score < 2 or publisher_counts[publisher] >= 2:
+                continue
+            if rescue_count >= settings.ONBORA_RESCUE_ANALYSIS_LIMIT:
+                break
+            run.refresh_from_db(fields=["cancellation_requested"])
+            if run.cancellation_requested:
+                return _cancel_run(run)
+            selected.append(hit)
+            selected_urls.add(url)
+            publisher_counts[publisher] += 1
+            rescue_count += 1
+            if evidence := _capture_hit(run, hit, len(selected), company, page_fetcher, limitations):
+                captured.append(evidence)
+            if any(item.verdict == "Pertinente" for item in captured):
+                break
+
+    # Search more deeply only after reading the first pages: promising snippets
+    # alone are not evidence that the right company has been found.
+    if ai_client and not any(item.verdict == "Pertinente" for item in captured):
+        run.refresh_from_db(fields=["cancellation_requested"])
+        if run.cancellation_requested:
+            return _cancel_run(run)
+        ai_search_attempted = True
+        reasons = ["aucune page vérifiée comme pertinente après analyse SearXNG"]
+        if failed_categories:
+            reasons.append(f"requêtes indisponibles : {', '.join(failed_categories)}")
+        if engine_warnings:
+            reasons.append(f"moteurs bloqués ou indisponibles : {'; '.join(engine_warnings[:4])}")
+        try:
+            ai_hits = ai_client.search(company, " ; ".join(reasons))
+        except GeminiServiceError as error:
+            limitations.append(str(error))
+            SourceAttempt.objects.create(
+                research_run=run,
+                provider="openai" if isinstance(ai_client, OpenAIResearchClient) else "gemini",
+                query=f"Complément IA pour {company.legal_name}",
+                category="ai_fallback",
+                status=SourceAttempt.Status.UNAVAILABLE,
+                reason=str(error),
+            )
+        else:
+            ai_search_count = len(ai_hits)
+            fallback_hits: dict[str, SearchHit] = {}
+            for hit in ai_hits:
+                try:
+                    url = canonicalize_url(hit.url)
+                except ValueError:
+                    continue
+                score = rank_search_hit(hit.title, hit.snippet, hit.url, company)
+                scored = SearchHit(**{**hit.__dict__, "discovery_score": score})
+                all_hits.append(scored)
+                SourceAttempt.objects.create(
+                    research_run=run,
+                    provider=hit.provider,
+                    query=hit.query,
+                    category=hit.category,
+                    url=hit.url,
+                    title=hit.title,
+                    snippet=hit.snippet[:2000],
+                    search_rank=hit.rank,
+                    relevance_score=score,
+                    status=SourceAttempt.Status.RETURNED,
+                    reason="Source découverte avec recherche web IA.",
+                )
+                if url not in selected_urls and url not in fallback_hits:
+                    fallback_hits[url] = scored
+            publisher_counts = defaultdict(int)
+            fallback_count = 0
+            fallback_limit = (
+                settings.ONBORA_OPENAI_MAX_SEARCH_SOURCES if isinstance(ai_client, OpenAIResearchClient)
+                else settings.ONBORA_GEMINI_MAX_SEARCH_SOURCES
+            )
+            for hit in sorted(fallback_hits.values(), key=lambda item: (-item.discovery_score, item.rank, item.url)):
+                publisher = _publisher(hit.url)
+                if publisher_counts[publisher] >= 2 or fallback_count >= fallback_limit:
+                    continue
+                selected.append(hit)
+                selected_urls.add(canonicalize_url(hit.url))
+                publisher_counts[publisher] += 1
+                fallback_count += 1
+                run.refresh_from_db(fields=["cancellation_requested"])
+                if run.cancellation_requested:
+                    return _cancel_run(run)
+                if evidence := _capture_hit(run, hit, len(selected), company, page_fetcher, limitations):
+                    captured.append(evidence)
+            for url, hit in fallback_hits.items():
+                current = deduplicated.get(url)
+                if current is None or hit.discovery_score > current.discovery_score:
+                    deduplicated[url] = hit
+            ranked = sorted(deduplicated.values(), key=lambda item: (-item.discovery_score, item.rank, item.url))
+
+    lead_plan = []
+    if settings.ONBORA_LEAD_QUALIFICATION_ENABLED and any(item.verdict == "Pertinente" for item in captured):
+        lead_plan = build_lead_query_plan(company)
+        if not collect_queries(lead_plan):
+            return _cancel_run(run)
+        lead_candidates: dict[str, SearchHit] = {}
+        for hit in all_hits:
+            if not hit.category.startswith("lead_"):
+                continue
+            url = canonicalize_url(hit.url)
+            current = deduplicated.get(url)
+            if current is None or hit.discovery_score > current.discovery_score:
+                deduplicated[url] = hit
+            if url not in selected_urls and (
+                url not in lead_candidates or hit.discovery_score > lead_candidates[url].discovery_score
+            ):
+                lead_candidates[url] = hit
+        lead_publishers: defaultdict[str, int] = defaultdict(int)
+        lead_count = 0
+        for hit in sorted(lead_candidates.values(), key=lambda item: (-item.discovery_score, item.rank, item.url)):
+            publisher = _publisher(hit.url)
+            if hit.discovery_score < 2 or lead_publishers[publisher] >= 2:
+                continue
+            if lead_count >= settings.ONBORA_LEAD_ANALYSIS_LIMIT:
+                break
+            run.refresh_from_db(fields=["cancellation_requested"])
+            if run.cancellation_requested:
+                return _cancel_run(run)
+            selected.append(hit)
+            selected_urls.add(canonicalize_url(hit.url))
+            lead_publishers[publisher] += 1
+            lead_count += 1
+            if evidence := _capture_hit(run, hit, len(selected), company, page_fetcher, limitations):
+                captured.append(evidence)
+        ranked = sorted(deduplicated.values(), key=lambda item: (-item.discovery_score, item.rank, item.url))
+
     for item in ranked:
         if canonicalize_url(item.url) not in selected_urls:
             SourceAttempt.objects.create(
@@ -210,70 +377,20 @@ def execute_research_run(
                 search_rank=item.rank,
                 relevance_score=item.discovery_score,
                 status=SourceAttempt.Status.FILTERED,
-                reason="Résultat dédupliqué ou moins pertinent que les pages retenues.",
+                reason="Résultat moins prioritaire que les pages analysées.",
             )
-
-    captured: list[RunEvidence] = []
-    for position, hit in enumerate(selected, start=1):
-        run.refresh_from_db(fields=["cancellation_requested"])
-        if run.cancellation_requested:
-            return _cancel_run(run)
-        assessment = page_fetcher.analyze(hit, company)
-        if assessment.error:
-            limitations.append(f"Source inaccessible : {_publisher(hit.url) or hit.url}")
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider=hit.provider,
-                query=hit.query,
-                category=hit.category,
-                url=hit.url,
-                title=hit.title,
-                search_rank=hit.rank,
-                relevance_score=hit.discovery_score,
-                status=SourceAttempt.Status.UNAVAILABLE,
-                reason=assessment.error,
-            )
-            continue
-        canonical_url = canonicalize_url(assessment.final_url)
-        evidence, _created = EvidenceCapture.objects.get_or_create(
-            canonical_url=canonical_url,
-            content_hash=assessment.content_hash,
-            defaults={
-                "observed_url": assessment.final_url,
-                "title": hit.title,
-                "publisher": _publisher(assessment.final_url),
-                "source_type": assessment.source_type,
-                "relationship": assessment.relationship,
-                "access_status": EvidenceCapture.AccessStatus.ACCESSIBLE,
-            },
-        )
-        run_evidence, _linked = RunEvidence.objects.get_or_create(
-            research_run=run,
-            evidence=evidence,
-            defaults={
-                "position": position,
-                "relevant_excerpt": assessment.excerpt,
-                "relevance_score": assessment.score,
-                "verdict": assessment.verdict,
-                "reasons": list(assessment.reasons),
-            },
-        )
-        captured.append(run_evidence)
-        SourceAttempt.objects.create(
-            research_run=run,
-            provider=hit.provider,
-            query=hit.query,
-            category=hit.category,
-            url=assessment.final_url,
-            title=hit.title,
-            search_rank=hit.rank,
-            relevance_score=assessment.score,
-            status=SourceAttempt.Status.ACCESSIBLE,
-            reason=assessment.verdict,
-        )
 
     usable_evidence = [item for item in captured if item.verdict in {"Pertinente", "À vérifier"}]
-    if ai_client:
+    usable_evidence.sort(key=lambda item: (
+        item.verdict == "Pertinente", item.evidence.relationship == "first_party",
+        item.relevance_score, len(item.relevant_excerpt),
+    ), reverse=True)
+    if not usable_evidence:
+        ai_summary = {
+            "status": "not_generated",
+            "message": "Aucune page analysée ne relie suffisamment cette source à l’entreprise. Aucun résumé n’a été généré.",
+        }
+    elif ai_client:
         try:
             ai_summary = ai_client.summarize(
                 company,
@@ -294,13 +411,13 @@ def execute_research_run(
         except GeminiServiceError as error:
             ai_summary = {
                 "status": "failed",
-                "model": getattr(ai_client, "model", settings.ONBORA_GEMINI_MODEL),
+                "model": getattr(ai_client, "model", ""),
                 "message": f"{error} Les sources restent disponibles ci-dessous.",
             }
     else:
         ai_summary = {
             "status": "disabled",
-            "message": "Gemini n’est pas activé ou aucune clé API n’est configurée.",
+            "message": "Aucun fournisseur IA n’est activé ou aucune clé API n’est configurée.",
         }
 
     identity_status = _identity_status(captured)
@@ -338,14 +455,18 @@ def execute_research_run(
     for item in captured:
         verdict_counts[item.verdict] += 1
     summary = {
-        "query_count": len(plan),
+        "query_count": len(plan) + len(lead_plan),
         "returned_count": len(all_hits),
         "unique_count": len(ranked),
         "analyzed_count": len(selected),
+        "rescue_analyzed_count": rescue_count,
         "captured_count": len(captured),
+        "usable_count": len(usable_evidence),
+        "analysis_failure_count": len(selected) - len(captured),
         "verdict_counts": dict(verdict_counts),
         "ai_search_attempted": ai_search_attempted,
         "ai_search_source_count": ai_search_count,
+        "lead_query_count": len(lead_plan),
         "sector_segmentation": sector_segmentation,
         "lead_qualification": lead_qualification,
     }

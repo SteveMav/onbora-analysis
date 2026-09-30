@@ -1,0 +1,54 @@
+{% extends "research/base.html" %}
+{% load static %}
+{% block title %}Multi Search · Onbora{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{% static 'research/multi_search.css' %}">
+<script src="{% static 'research/multi_search.js' %}" defer></script>
+{% endblock %}
+{% block content %}
+<section class="multi-heading">
+  <p class="eyebrow">Plusieurs entreprises, une seule recherche</p>
+  <h1>Multi Search<span>.</span></h1>
+  <p class="lead">Choisis jusqu’à 5 entreprises. Retrouve pour chacune un résumé, ses sources et les offres Orange à explorer.</p>
+  <ol class="multi-steps"><li><b>1</b> Sélectionner</li><li><b>2</b> Lancer ensemble</li><li><b>3</b> Lire les résultats</li></ol>
+</section>
+{% if latest_import %}
+<div class="multi-selection" data-selection data-storage-key="onbora-multi-{{ user.pk }}-{{ latest_import.pk }}">
+  <section class="panel multi-picker">
+    <div class="panel-heading"><h2>Choisir les entreprises</h2><span class="muted">Base ARSP</span></div>
+    <form class="search-form" id="multi-filter" method="get">
+      <label class="sr-only" for="multi-query">Nom ou numéro de dossier</label>
+      <input id="multi-query" name="q" value="{{ query }}" placeholder="Nom ou numéro de dossier…" autocomplete="off">
+      <button class="button secondary" type="submit">Trouver</button>
+    </form>
+    <p id="selection-notice" class="multi-notice" role="status" aria-live="polite">Tu peux changer de recherche en gardant ta sélection.</p>
+    <div id="multi-companies">{% include "research/multi_company_list.html" %}</div>
+  </section>
+  <aside class="panel multi-basket" aria-labelledby="basket-title">
+    <p class="eyebrow">Ton lot de recherche</p>
+    <h2 id="basket-title">La sélection <span id="selection-count">0 / 5</span></h2>
+    <ol id="selected-companies" class="multi-selected"></ol>
+    <p id="selection-empty" class="muted">Ajoute les entreprises qui t’intéressent dans la liste.</p>
+    <form id="batch-create" method="post" action="{% url 'multi-search-create' %}">
+      {% csrf_token %}<input type="hidden" name="submission_id" value="{{ submission_id }}">
+      <div id="selection-inputs"></div>
+      <button id="launch-batch" class="button primary" type="submit">Lancer les recherches</button>
+    </form>
+    <small>Les résultats apparaîtront au fur et à mesure, sur une seule page.</small>
+    <noscript><p>Sans JavaScript, coche les entreprises de cette page puis lance les recherches.</p></noscript>
+  </aside>
+</div>
+{% else %}
+<div class="alert warning">Aucune entreprise importée. Ajoute d’abord la base ARSP.</div>
+{% endif %}
+{% if recent_batches %}
+<section class="panel">
+  <div class="panel-heading"><h2>Mes dernières sélections</h2></div>
+  <div class="multi-history">
+    {% for batch in recent_batches %}
+    <a href="{% url 'multi-search-detail' batch.pk %}"><strong>{{ batch.company_count }} entreprise{{ batch.company_count|pluralize }}</strong><span>{{ batch.created_at|date:"d/m/Y · H:i" }} <span aria-hidden="true">↗</span></span></a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

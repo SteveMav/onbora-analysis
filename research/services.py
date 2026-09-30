@@ -32,11 +32,12 @@ def frozen_seed(record: ArspRecord) -> dict[str, Any]:
     }
 
 
-def request_fingerprint(record: ArspRecord, protocol_version: str) -> str:
+def request_fingerprint(record: ArspRecord, protocol_version: str, requested_by_id: int) -> str:
     payload = {
         "record_id": record.pk,
         "import_hash": record.arsp_import.file_hash,
         "protocol_version": protocol_version,
+        "requested_by_id": requested_by_id,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -49,11 +50,18 @@ def create_or_get_active_run(
 
     The partial unique constraint is the final guard against concurrent requests.
     """
-    fingerprint = request_fingerprint(record, protocol_version)
+    fingerprint = request_fingerprint(record, protocol_version, requested_by.pk)
     try:
         with transaction.atomic():
+            # Also reuse the owner's runs created before fingerprints included ownership.
+            active = ResearchRun.objects.filter(
+                source_record=record, requested_by=requested_by, protocol_version=protocol_version,
+                state__in=[ResearchRun.State.QUEUED, ResearchRun.State.RESEARCHING],
+            ).first()
+            if active:
+                return active, False
             previous_run = (
-                ResearchRun.objects.filter(source_record=record, request_fingerprint=fingerprint)
+                ResearchRun.objects.filter(source_record=record, requested_by=requested_by, protocol_version=protocol_version)
                 .exclude(state__in=[ResearchRun.State.QUEUED, ResearchRun.State.RESEARCHING])
                 .order_by("-created_at")
                 .first()

@@ -1,0 +1,19 @@
+{% extends "research/base.html" %}
+{% load static %}
+{% block title %}Résultats Multi Search · Onbora{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{% static 'research/multi_search.css' %}">
+<script src="{% static 'research/multi_search.js' %}" defer></script>
+{% endblock %}
+{% block content %}
+<a class="back" href="{% url 'multi-search' %}">← Nouvelle sélection</a>
+<section class="multi-heading multi-result-heading">
+  <div><p class="eyebrow">Multi Search · {{ batch.created_at|date:"d/m/Y à H:i" }}</p><h1>Les résultats<span>.</span></h1><p class="lead">Une fiche par entreprise, avec les informations trouvées et les pistes commerciales.</p></div>
+  <button class="button secondary" id="copy-report" type="button">Copier les résumés et liens</button>
+</section>
+<p id="report-notice" class="multi-notice" role="status" aria-live="polite"></p>
+<div id="multi-results" data-results data-poll-url="{% url 'multi-search-detail' batch.pk %}?fragment=1">
+  {% include "research/multi_results.html" %}
+</div>
+<noscript><p>Actualise cette page pour voir les nouveaux résultats.</p></noscript>
+{% endblock %}

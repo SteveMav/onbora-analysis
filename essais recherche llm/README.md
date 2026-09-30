@@ -2,14 +2,14 @@
 
 Petit prototype Tkinter de recherche et qualification B2B. Il charge les entreprises
 du fichier `../liste_entreprises_arsp.xlsx` et les 41 services du catalogue Orange
-Business v1, puis utilise Gemini avec Google Search pour chercher des signaux publics
+Business v1, puis utilise exclusivement `gpt-6-luna` avec la recherche web OpenAI pour chercher des signaux publics
 et apprécier la pertinence de plusieurs offres B2B.
 
 Le rapport ne dit jamais qu'une entreprise est « intéressée » : il classe chaque offre
 comme **Prioritaire**, **À explorer** ou **Non qualifiable** et donne les éléments à
-vérifier. Les liens retournés par Google Search sont affichés dans l'onglet **Sources
-à vérifier** ; ouvre-les avant toute prospection. Les appels utilisent l'Interactions
-API avec `store=false` : le prototype ne conserve pas de conversation côté Gemini.
+vérifier. Les liens cités par la recherche web sont affichés dans l'onglet **Sources
+à vérifier** ; ouvre-les avant toute prospection. Les appels utilisent la Responses
+API avec `store=false`.
 
 ## Préparation
 
@@ -17,15 +17,12 @@ La clé reste hors du dossier et hors du code. Crée ou complète le fichier `.e
 racine de `C:\dev\onbora analysis` :
 
 ```dotenv
-GEMINI_API_KEY=ta_cle_gemini
-# Facultatif : modèle à employer par ce prototype
-LLM_RESEARCH_MODEL=gemini-3.6-flash
+OPENAI=ta_cle_openai
 ```
 
-Si le projet principal possède déjà `GEMINI_API_KEY`, aucune copie de clé n'est
-nécessaire. Le modèle par défaut est `gemini-3.6-flash`, car `gemini-2.5-flash`
-n'est plus disponible pour les nouvelles clés. Le lanceur met à niveau
-`google-genai` vers une version compatible avec l'Interactions API.
+Si le projet principal possède déjà `OPENAI`, aucune copie de clé n'est
+nécessaire. Ce prototype utilise toujours `gpt-6-luna`, sans sélection de modèle
+par variable d'environnement. Le lanceur installe le SDK `openai` compatible.
 
 Le catalogue est lu depuis :
 
@@ -53,13 +50,10 @@ dépendances demandées si nécessaire, puis ouvre la fenêtre. Choisis une entr
 sélectionne une ou plusieurs offres puis clique sur **Ajouter la sélection aux
 offres**. Tu peux compléter manuellement les offres avant de lancer la recherche.
 
-## Dépannage Gemini
+## Dépannage OpenAI
 
-Si l'application indique que le quota est indisponible ou épuisé, la clé est bien
-reconnue mais le projet Gemini n'a plus de quota utilisable pour cette requête.
-Vérifie les limites, le plan et la facturation dans Google AI Studio, puis relance
-la recherche. Une nouvelle clé ou un quota disponible est nécessaire : le code ne
-peut pas contourner cette limite.
+Si l'application signale une limite de débit ou de quota, vérifie les limites,
+le plan et la facturation du projet OpenAI, puis relance la recherche.
 
 ## Vérifier le code
 
@@ -68,4 +62,4 @@ cd "C:\dev\onbora analysis\essais recherche llm"
 python -m unittest -v test_app.py
 ```
 
-Les tests n'appellent pas Gemini et ne consomment aucun quota.
+Les tests n'appellent pas OpenAI et ne consomment aucun quota.

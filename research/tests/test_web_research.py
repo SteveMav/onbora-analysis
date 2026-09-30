@@ -15,10 +15,15 @@ from research.web_research import (
     QuerySpec,
     SearchHit,
     SearxngClient,
+    assess_text,
+    build_lead_query_plan,
     build_query_plan,
     canonicalize_url,
     company_from_snapshot,
+    company_website_domain,
+    is_seed_website,
     rank_search_hit,
+    source_classification,
     validate_public_url,
 )
 
@@ -52,9 +57,13 @@ class QueryPlanningTests(TestCase):
         self.assertEqual(plan[0].category, "registry")
         self.assertGreaterEqual(len(plan), 3)
         self.assertTrue({
-            "lead_network", "lead_customer", "lead_mobility", "lead_collaboration",
-            "lead_cloud", "sector",
+            "registry", "registry_name", "arsp", "identity", "sector",
         }.issubset({item.category for item in plan}))
+        self.assertFalse(any(item.category.startswith("lead_") for item in plan))
+        self.assertTrue({
+            "lead_network", "lead_customer", "lead_mobility", "lead_collaboration",
+            "lead_cloud",
+        }.issubset({item.category for item in build_lead_query_plan(company)}))
         self.assertNotIn("lead_security", {item.category for item in plan})
         self.assertGreater(good, noise)
         self.assertLess(noise, 0)
@@ -80,6 +89,48 @@ class QueryPlanningTests(TestCase):
         self.assertEqual(company.rccm, "CD/KNG/RCCM/17-B-0135")
         self.assertTrue(all("_x000d_" not in query.casefold() for query in queries))
         self.assertIn('"1FLUENCE"', queries)
+
+    def test_page_title_and_distant_identifier_cannot_confirm_a_homonym(self):
+        company = CompanySeed(legal_name="Atlas Kivu SARLU", rccm="CD/GOM/RCCM/26-B-001")
+        page = "Atlas Kivu SARLU vend des fournitures.\nAutre Entreprise SARLU | CD/GOM/RCCM/26-B-001"
+        assessment = assess_text(company, "Atlas Kivu SARLU : résultat", page, "https://example.org/list")
+        self.assertEqual(assessment.verdict, "À vérifier")
+        self.assertNotIn("RCCM exact trouvé", assessment.reasons)
+
+        wrong_page = assess_text(company, "Atlas Kivu SARLU : résultat", "Autre Entreprise SARLU est à Goma.", "https://example.org/other")
+        self.assertEqual(wrong_page.verdict, "Hors sujet probable")
+
+    def test_name_and_rccm_in_same_passage_are_admitted(self):
+        company = CompanySeed(legal_name="Atlas Kivu SARLU", rccm="CD/GOM/RCCM/26-B-001")
+        assessment = assess_text(company, "Registre", "Atlas Kivu SARLU | CD/GOM/RCCM/26-B-001 | Transport", "https://arsp.cd/register")
+        self.assertEqual(assessment.verdict, "Pertinente")
+        self.assertIn("CD/GOM/RCCM/26-B-001", assessment.excerpt)
+
+    def test_name_like_domain_is_not_labeled_as_official_without_proof(self):
+        source_type, relationship = source_classification(
+            "https://atlas-kivu-news.example/story", CompanySeed(legal_name="Atlas Kivu SARLU")
+        )
+        self.assertEqual((source_type, relationship), ("other", "discovery_only"))
+
+    def test_brand_without_legal_suffix_is_retained_without_confirming_identity(self):
+        company = CompanySeed(legal_name="1FLUENCE SARLU", province="Kinshasa")
+        result = assess_text(company, "Source", "#1FLUENCE est une agence de communication à Kinshasa.",
+                             "https://directory.example/1fluence")
+        self.assertEqual(result.verdict, "À vérifier")
+        self.assertIn("agence de communication", result.excerpt)
+
+    def test_brand_matching_uses_word_boundaries(self):
+        company = CompanySeed(legal_name="1FLUENCE SARLU")
+        result = assess_text(company, "Source", "21FLUENCE propose des services.", "https://example.org")
+        self.assertEqual(result.verdict, "Hors sujet probable")
+
+    def test_registry_email_domain_requires_company_specific_match(self):
+        company = CompanySeed(legal_name="1FLUENCE SARLU", email="contact@1fluence.net")
+        self.assertEqual(company_website_domain(company), "1fluence.net")
+        self.assertTrue(is_seed_website("https://www.1fluence.net/", company))
+        self.assertFalse(is_seed_website("https://1fluence.net.evil.example/", company))
+        for email in ("contact@gmail.com", "contact@example.org", "bad@@1fluence.net"):
+            self.assertEqual(company_website_domain(CompanySeed(legal_name="1FLUENCE SARLU", email=email)), "")
 
 
 class _JsonResponse:
@@ -148,6 +199,23 @@ class _FakePageFetcher:
         )
 
 
+class _InitiallyIrrelevantPageFetcher(_FakePageFetcher):
+    def analyze(self, hit, company):
+        if hit.provider == "gemini":
+            assessment = super().analyze(hit, company)
+            return PageAssessment(**{**assessment.__dict__, "final_url": hit.url})
+        return PageAssessment(
+            verdict="Hors sujet probable",
+            score=0,
+            source_type="other",
+            relationship="independent",
+            reasons=("pas assez d’éléments pour relier la page à l’entreprise",),
+            excerpt="Une autre entreprise.",
+            final_url=hit.url,
+            content_hash="e" * 64,
+        )
+
+
 class _UnavailableSearchClient:
     def search(self, spec):
         raise RuntimeError("offline")
@@ -170,6 +238,8 @@ class _FakeAiClient:
 
     def summarize(self, company, evidence):
         items = list(evidence)
+        if not items:
+            return {"status": "not_generated", "model": self.model, "message": "Aucune preuve exploitable."}
         return {
             "status": "complete",
             "model": self.model,
@@ -192,9 +262,16 @@ class _SearchFailingAiClient(_FakeAiClient):
         raise GeminiServiceError("Recherche complémentaire Gemini : quota Gemini indisponible ou épuisé.")
 
 
+class _NewSourceAiClient(_FakeAiClient):
+    def search(self, company, reason):
+        hit = super().search(company, reason)[0]
+        return [SearchHit(**{**hit.__dict__, "url": "https://new-source.example/company"})]
+
+
 @override_settings(
     ONBORA_ANALYSIS_LIMIT=5,
     ONBORA_GEMINI_ENABLED=False,
+    ONBORA_OPENAI_ENABLED=False,
     ONBORA_OFFER_CATALOG_PATH=CATALOG_FIXTURE,
 )
 class ResearchPipelineTests(TestCase):
@@ -279,7 +356,7 @@ class ResearchPipelineTests(TestCase):
         self.assertEqual(completed.ai_model, "gemini-test-fast")
         self.assertTrue(SourceAttempt.objects.filter(provider="gemini", status="returned").exists())
 
-    def test_keeps_searx_results_and_summary_when_gemini_search_quota_is_unavailable(self):
+    def test_skips_gemini_search_when_a_searx_page_is_relevant(self):
         completed = execute_research_run(
             self.run,
             search_client=_WarningSearchClient(),
@@ -289,6 +366,32 @@ class ResearchPipelineTests(TestCase):
 
         self.assertEqual(completed.state, ResearchRun.State.AWAITING_REVIEW)
         self.assertEqual(completed.ai_summary["status"], "complete")
+        self.assertFalse(completed.result_summary["ai_search_attempted"])
+        self.assertTrue(SourceAttempt.objects.filter(provider="searxng", status="returned").exists())
+
+    def test_searches_with_gemini_after_promising_searx_links_prove_irrelevant(self):
+        completed = execute_research_run(
+            self.run,
+            search_client=_FakeSearchClient(),
+            page_fetcher=_InitiallyIrrelevantPageFetcher(),
+            ai_client=_NewSourceAiClient(),
+        )
+
+        self.assertTrue(completed.result_summary["ai_search_attempted"])
+        self.assertEqual(completed.ai_summary["status"], "complete")
+        self.assertEqual(completed.result_summary["captured_count"], 2)
+        self.assertTrue(RunEvidence.objects.filter(verdict="Pertinente").exists())
+        self.assertTrue(SourceAttempt.objects.filter(provider="gemini", status="accessible").exists())
+
+    def test_keeps_original_evidence_when_gemini_quota_fails_after_irrelevant_pages(self):
+        completed = execute_research_run(
+            self.run,
+            search_client=_FakeSearchClient(),
+            page_fetcher=_InitiallyIrrelevantPageFetcher(),
+            ai_client=_SearchFailingAiClient(),
+        )
+
+        self.assertEqual(completed.state, ResearchRun.State.AWAITING_REVIEW)
         self.assertTrue(any("quota Gemini" in item for item in completed.limitations))
         self.assertTrue(SourceAttempt.objects.filter(provider="searxng", status="returned").exists())
 

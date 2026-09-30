@@ -10,45 +10,76 @@ Django avec une persistance des recherches et des preuves.
 - rôles Django (`kam`, `reviewer`, `operator`, `admin`) et audit d’actions ;
 - création idempotente, consultation restreinte et annulation des recherches ;
 - interface web pour chercher une ligne ARSP et consulter une exécution ;
-- plan de requêtes ciblées par nom, RCCM, localisation et activité ;
+- plan de requêtes d'identité par nom, RCCM, localisation et activité, puis
+  requêtes commerciales après une preuve d'identité pertinente ;
 - déduplication et préclassement des liens avant téléchargement ;
 - inventaire complet et cliquable de toutes les URLs trouvées, même non analysées ;
-- récupération publique bornée (SSRF, redirections, MIME, taille et délai) ;
-- extraction Trafilatura, classement de pertinence et extraits vérifiables ;
+- récupération publique bornée (SSRF, redirections, MIME, taille et délai),
+  avec une limite séparée pour les grandes pages ARSP ;
+- extraction ciblée des lignes ARSP et extraction Trafilatura des autres pages ;
 - stockage séparé des tentatives, captures et évaluations propres à chaque run.
-- recherche complémentaire Gemini quand SearXNG est bloqué ou trop pauvre ;
-- résumé Gemini séparé, dont chaque affirmation renvoie aux preuves capturées.
+- recherche web IA quand aucune page SearXNG analysée n'est pertinente ;
+- résumé IA séparé, dont chaque affirmation renvoie aux preuves capturées.
 - segmentation sectorielle déterministe avec niveau de confiance et preuves publiques ;
 - benchmark humain persistant sur des lots de 10 entreprises, avec comparaison
   entre les informations visibles dans les sources et le résultat Onbora.
 
-La revue humaine complète prévue par le PRD n’est pas encore activée. Gemini
-reste facultatif : une panne ou un quota épuisé ne masque jamais les résultats
+La revue humaine complète prévue par le PRD n’est pas encore activée. L’IA
+reste facultative : une panne ou un quota épuisé ne masque jamais les résultats
 SearXNG déjà obtenus.
 
-## Configuration Gemini
+## Configuration IA à faible coût
 
-Crée un fichier `.env` à la racine sans le versionner :
+Le fichier `.env` peut contenir la clé déjà nommée `OPENAI` (ou
+`OPENAI_API_KEY`). Quand elle est présente, OpenAI est utilisé avant Gemini :
+
+```dotenv
+OPENAI=ta_cle_api
+```
+
+Le modèle par défaut est `gpt-6-luna`. Pour protéger un petit budget de test,
+chaque recherche de secours autorise au maximum **un appel de recherche web**,
+retient cinq URLs et ne fait aucun retry automatique. Le résumé réutilise
+uniquement les pages vérifiées, sans nouvel appel web. Réglages optionnels :
+
+```dotenv
+ONBORA_OPENAI_ENABLED=1
+ONBORA_OPENAI_MODEL=gpt-6-luna
+ONBORA_OPENAI_MAX_SEARCH_SOURCES=5
+ONBORA_OPENAI_TIMEOUT_SECONDS=45
+```
+
+Sans clé OpenAI, l'ancien complément Gemini reste disponible avec :
 
 ```dotenv
 GEMINI_API_KEY=ta_cle_api
-```
-
-Le modèle par défaut est `gemini-3.5-flash-lite`. Les réglages optionnels sont :
-
-```dotenv
 ONBORA_GEMINI_ENABLED=1
 ONBORA_GEMINI_MODEL=gemini-3.5-flash-lite
-ONBORA_GEMINI_FALLBACK_MIN_RESULTS=3
 ONBORA_GEMINI_MAX_SEARCH_SOURCES=8
 ONBORA_GEMINI_TIMEOUT_MS=45000
 ```
 
-Le complément Gemini utilise Google Search grounding lorsqu’une requête ou un
-moteur SearXNG échoue, ou lorsque moins de trois résultats sont jugés pertinents.
-Les URLs trouvées repassent ensuite par la récupération et l’analyse Onbora. Une
-page inaccessible reste une piste non vérifiée et ne peut pas alimenter le résumé.
-Le quota Google Search grounding dépend du plan associé à la clé Gemini.
+Après l’analyse des pages SearXNG, la recherche web IA démarre si aucune page
+n'a le verdict « Pertinente ». Elle explore l'identité, les activités et les
+mentions indépendantes, puis conserve un nombre borné de nouvelles URLs.
+Celles-ci repassent par la récupération et l’analyse Onbora. Une page inaccessible
+ou jugée hors sujet ne peut pas alimenter le résumé.
+Les pages ARSP peuvent atteindre `ONBORA_MAX_ARSP_PAGE_BYTES` (8 Mo par défaut) ;
+les autres gardent `ONBORA_MAX_PAGE_BYTES` (2 Mo). Les requêtes commerciales
+ne démarrent qu'après une preuve d'identité pertinente ; leur analyse est bornée
+par `ONBORA_LEAD_ANALYSIS_LIMIT` (4 pages par défaut).
+Si la première sélection ne donne aucune page pertinente, Onbora peut lire
+quatre autres résultats SearXNG avant de payer une recherche web IA ; ce plafond
+est réglable avec `ONBORA_RESCUE_ANALYSIS_LIMIT`.
+Le moteur reconnaît aussi la marque sans suffixe juridique. Lorsqu’un email
+ARSP utilise un domaine concordant avec cette marque, il explore directement
+ce site et lit son titre HTML réel pour les sites dont le logo n’est pas extrait.
+La concordance du domaine et du nom permet de retenir le site comme source de
+l’entreprise ; elle ne prouve pas que le RCCM est publié sur ce site. Les sources
+pertinentes et les sites ainsi rattachés passent avant les mentions incertaines
+dans le paquet envoyé au modèle de synthèse.
+La recherche web OpenAI est facturée par appel en plus des jetons du modèle ;
+son prix dépend du compte et des tarifs OpenAI en vigueur.
 
 ## Qualification de leads Orange
 
@@ -76,10 +107,10 @@ ONBORA_OFFER_CATALOG_PATH=C:\chemin\vers\catalog.json
 ONBORA_LEAD_QUALIFICATION_ENABLED=1
 ```
 
-Quand la qualification est activée, cinq requêtes de recherche supplémentaires
+Quand une identité pertinente est trouvée, cinq requêtes de recherche supplémentaires
 cherchent des signaux liés aux implantations, aux parcours clients, aux
 opérations mobiles, à la collaboration et à l’infrastructure. Un catalogue absent n’empêche pas la recherche générale ni
-le résumé Gemini : seule la section commerciale est marquée indisponible.
+le résumé IA : seule la section commerciale est marquée indisponible.
 
 ## Démarrage le plus simple (Windows)
 
@@ -102,6 +133,23 @@ arrêter aussi SearXNG :
 ```powershell
 docker compose -f .\essai\docker-compose.yml down
 ```
+
+## Multi Search
+
+Ouvre `/multi-search/` (lien **Multi Search** dans la navigation) avec un compte
+`kam`, `operator` ou `admin`. Sélectionne entre 1 et 5 entreprises dans l’import
+ARSP actif, puis lance le lot. La sélection reste disponible pendant les
+recherches et les changements de page.
+
+Les fiches se mettent à jour automatiquement : résumé avec citations, sources
+retenues et offres Orange RDC à explorer. Les pistes commerciales restent des
+hypothèses à confirmer. Sans résumé exploitable, les extraits disponibles sont
+affichés et l’absence de preuve est signalée. Le bouton **Copier les résumés et
+liens** produit un texte par entreprise. Les lots restent dans l’historique.
+
+Le lanceur démarre le worker avec `--concurrency 5`. Un double envoi du même
+formulaire réutilise le lot ; une recherche déjà active pour ce compte est
+réutilisée. Chaque entreprise avance indépendamment des échecs des autres.
 
 ## Benchmark humain
 
@@ -128,7 +176,7 @@ python manage.py import_arsp .\liste_entreprises_arsp.xlsx
 python manage.py createsuperuser
 
 # Fenêtre 2 — worker
-python manage.py run_research_worker --loop
+python manage.py run_research_worker --loop --concurrency 5
 
 # Fenêtre 3 — interface
 python manage.py runserver
@@ -140,9 +188,15 @@ attribue le groupe `kam`, `reviewer` ou `operator` depuis `/admin/`.
 ## Vérification
 
 ```powershell
+python manage.py test research.tests.test_pipeline_quality
 python manage.py test research
 python manage.py check
 ```
+
+`test_pipeline_quality` rejoue hors ligne des pages de registre, des homonymes,
+une recherche de rattrapage et un dossier sans preuve. Il ne consomme pas d'API IA
+ni de moteur web. Les recherches réelles restent utiles pour diagnostiquer la
+disponibilité des sites, mais ne remplacent pas ces tests reproductibles.
 
 `ONBORA_SECRET_KEY` est obligatoire quand `ONBORA_DEBUG=0`. Les limites de
 collecte peuvent être ajustées avec `ONBORA_ANALYSIS_LIMIT`,

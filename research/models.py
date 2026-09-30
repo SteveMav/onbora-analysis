@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q
@@ -83,6 +85,29 @@ class ResearchRun(models.Model):
             )
         ]
         indexes = [models.Index(fields=["state", "created_at"])]
+
+
+class ResearchBatch(models.Model):
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="research_batches")
+    submission_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
+class ResearchBatchItem(models.Model):
+    batch = models.ForeignKey(ResearchBatch, on_delete=models.CASCADE, related_name="items")
+    research_run = models.ForeignKey(ResearchRun, on_delete=models.PROTECT, related_name="batch_items")
+    position = models.PositiveSmallIntegerField()
+
+    class Meta:
+        ordering = ["position", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["batch", "research_run"], name="unique_run_per_batch"),
+            models.UniqueConstraint(fields=["batch", "position"], name="unique_position_per_batch"),
+            models.CheckConstraint(condition=Q(position__gte=1, position__lte=5), name="batch_position_one_to_five"),
+        ]
 
 
 class ResearchEvent(models.Model):

@@ -6,6 +6,7 @@
     <p class="eyebrow">Base ARSP · recherche publique</p>
     <h1>Trouver les bonnes traces,<br>écarter le bruit.</h1>
     <p class="lead">Sélectionne une entreprise. Onbora combine plusieurs requêtes, déduplique les liens, analyse les pages les plus prometteuses et conserve les preuves.</p>
+    {% if can_multi_search %}<p><a class="button secondary" href="{% url 'multi-search' %}">Multi Search · jusqu’à 5 entreprises</a></p>{% endif %}
   </div>
   <div class="hero-stat">
     {% if latest_import %}

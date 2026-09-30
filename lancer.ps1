@@ -1,3 +1,8 @@
+param(
+    [ValidateRange(1, 65535)]
+    [int]$Port = 8002
+)
+
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
@@ -49,12 +54,13 @@ if ($hasAdminResult -ne "1") {
     python manage.py createsuperuser
 }
 
-$worker = Start-Process -FilePath "python" -ArgumentList "manage.py", "run_research_worker", "--loop" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
+$worker = Start-Process -FilePath "python" -ArgumentList "manage.py", "run_research_worker", "--loop", "--concurrency", "5" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
 try {
-    Start-Process "http://127.0.0.1:8000/"
-    Write-Host "Onbora est accessible sur http://127.0.0.1:8000/"
+    $serverUrl = "http://127.0.0.1:$Port/"
+    Start-Process $serverUrl
+    Write-Host "Onbora est accessible sur $serverUrl"
     Write-Host "Appuie sur Ctrl+C pour arrêter Django et le worker."
-    python manage.py runserver
+    python manage.py runserver "127.0.0.1:$Port"
 } finally {
     if ($worker -and -not $worker.HasExited) { Stop-Process -Id $worker.Id }
 }

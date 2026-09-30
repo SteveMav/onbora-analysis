@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta
 
-from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.core.management.base import BaseCommand, CommandError
+from django.db import close_old_connections, connections, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -21,8 +22,15 @@ class Command(BaseCommand):
         parser.add_argument("--worker-id", default="local-worker")
         parser.add_argument("--loop", action="store_true", help="Wait for and process new runs continuously.")
         parser.add_argument("--poll-seconds", type=float, default=2.0)
+        parser.add_argument("--concurrency", type=int, default=1, help="Number of simultaneous runs (1–5).")
 
     def handle(self, *args, **options) -> None:
+        concurrency = options["concurrency"]
+        if not 1 <= concurrency <= 5:
+            raise CommandError("--concurrency must be between 1 and 5.")
+        if concurrency > 1:
+            self._handle_parallel(options)
+            return
         while True:
             processed = self._handle_one(options["worker_id"])
             if not options["loop"]:
@@ -32,7 +40,54 @@ class Command(BaseCommand):
             if not processed:
                 time.sleep(max(0.2, min(options["poll_seconds"], 30.0)))
 
+    def _handle_parallel(self, options) -> None:
+        poll = max(0.2, min(options["poll_seconds"], 30.0))
+        with ThreadPoolExecutor(max_workers=options["concurrency"]) as executor:
+            pending = {}
+            dispatched = False
+            renewed_at = time.monotonic()
+            while True:
+                if pending and time.monotonic() - renewed_at >= 30:
+                    ResearchRun.objects.filter(
+                        pk__in=pending.values(), state=ResearchRun.State.RESEARCHING,
+                        lease_owner=options["worker_id"],
+                    ).update(lease_expires_at=timezone.now() + timedelta(minutes=10))
+                    renewed_at = time.monotonic()
+                # Claims are serialized; network collection happens in independent threads.
+                if options["loop"] or not dispatched:
+                    while len(pending) < options["concurrency"]:
+                        run = self._claim_run(options["worker_id"], excluded_ids=pending.values())
+                        if run is None:
+                            break
+                        if run.state != ResearchRun.State.CANCELLED:
+                            pending[executor.submit(self._execute_in_thread, run)] = run.pk
+                    dispatched = True
+                if not pending and not options["loop"]:
+                    return
+                if pending:
+                    completed, _ = wait(pending, timeout=poll, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        del pending[future]
+                        future.result()
+                else:
+                    time.sleep(poll)
+
+    def _execute_in_thread(self, run: ResearchRun) -> None:
+        close_old_connections()
+        try:
+            self._execute_run(run)
+        finally:
+            connections.close_all()
+
     def _handle_one(self, worker_id: str) -> bool:
+        run = self._claim_run(worker_id)
+        if run is None:
+            return False
+        if run.state != ResearchRun.State.CANCELLED:
+            self._execute_run(run)
+        return True
+
+    def _claim_run(self, worker_id: str, *, excluded_ids=()) -> ResearchRun | None:
         now = timezone.now()
         with transaction.atomic():
             run = (
@@ -42,11 +97,12 @@ class Command(BaseCommand):
                     | Q(state=ResearchRun.State.RESEARCHING, cancellation_requested=True)
                     | Q(state=ResearchRun.State.RESEARCHING, lease_expires_at__lt=now)
                 )
+                .exclude(pk__in=excluded_ids)
                 .order_by("created_at")
                 .first()
             )
             if run is None:
-                return False
+                return None
             previous_state = run.state
             if run.cancellation_requested:
                 run.state = ResearchRun.State.CANCELLED
@@ -68,9 +124,9 @@ class Command(BaseCommand):
                 new_state=run.state,
             )
         self.stdout.write(f"Run {run.pk}: {previous_state} -> {run.state}")
-        if run.state == ResearchRun.State.CANCELLED:
-            return True
+        return run
 
+    def _execute_run(self, run: ResearchRun) -> None:
         try:
             completed = execute_research_run(run)
         except Exception as error:
@@ -94,4 +150,3 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR(f"Run {run.pk} failed: {type(error).__name__}: {error}"))
         else:
             self.stdout.write(self.style.SUCCESS(f"Run {run.pk} -> {completed.state}"))
-        return True

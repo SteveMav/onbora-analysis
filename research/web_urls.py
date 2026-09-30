@@ -1,9 +1,12 @@
 from django.urls import path
 
-from . import web_views
+from . import multi_search, web_views
 
 urlpatterns = [
     path("", web_views.dashboard, name="dashboard"),
+    path("multi-search/", multi_search.selection, name="multi-search"),
+    path("multi-search/create", multi_search.create, name="multi-search-create"),
+    path("multi-search/<int:batch_id>/", multi_search.detail, name="multi-search-detail"),
     path("benchmarks/", web_views.benchmark_list, name="benchmark-list"),
     path("benchmarks/create", web_views.benchmark_create, name="benchmark-create"),
     path("benchmarks/<int:benchmark_id>/", web_views.benchmark_detail, name="benchmark-detail"),

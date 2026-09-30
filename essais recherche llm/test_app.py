@@ -11,10 +11,10 @@ from app import (
     Company,
     DEFAULT_MODEL,
     SYSTEM_PROMPT,
-    GeminiB2BResearcher,
+    OpenAIB2BResearcher,
     _provider_error,
     build_research_request,
-    extract_interaction_sources,
+    extract_response_sources,
     load_catalog,
     load_companies,
 )
@@ -59,7 +59,7 @@ class PromptTests(unittest.TestCase):
         self.assertIn("intentions d'achat", SYSTEM_PROMPT)
         self.assertIn("Non qualifiable", SYSTEM_PROMPT)
         self.assertIn("CATALOGUE V1", SYSTEM_PROMPT)
-        self.assertEqual(DEFAULT_MODEL, "gemini-3.6-flash")
+        self.assertEqual(DEFAULT_MODEL, "gpt-6-luna")
 
 
 class CatalogLoadingTests(unittest.TestCase):
@@ -92,15 +92,15 @@ class CatalogLoadingTests(unittest.TestCase):
         self.assertIn("Éligibilité du site", block)
 
 
-class InteractionSourceTests(unittest.TestCase):
+class ResponseSourceTests(unittest.TestCase):
     def test_extracts_deduplicated_url_citations_from_model_output(self):
-        interaction = SimpleNamespace(
-            steps=[
+        response = SimpleNamespace(
+            output=[
                 SimpleNamespace(
-                    type="model_output",
+                    type="message",
                     content=[
                         SimpleNamespace(
-                            type="text",
+                            type="output_text",
                             annotations=[
                                 SimpleNamespace(type="url_citation", url="https://example.com/a", title="Source A"),
                                 SimpleNamespace(type="url_citation", url="https://example.com/a", title="Duplicate"),
@@ -113,7 +113,7 @@ class InteractionSourceTests(unittest.TestCase):
             ]
         )
 
-        sources = extract_interaction_sources(interaction)
+        sources = extract_response_sources(response)
 
         self.assertEqual([(source.source_id, source.title) for source in sources], [(1, "Source A"), (2, "Source B")])
 
@@ -121,7 +121,7 @@ class InteractionSourceTests(unittest.TestCase):
 class _FakeClient:
     def __init__(self, response):
         self.response = response
-        self.interactions = self
+        self.responses = self
         self.calls = []
 
     def __enter__(self):
@@ -135,16 +135,16 @@ class _FakeClient:
         return self.response
 
 
-class GeminiResearcherTests(unittest.TestCase):
+class OpenAIResearcherTests(unittest.TestCase):
     def test_returns_model_text_and_grounded_sources_without_network(self):
         response = SimpleNamespace(
             output_text="## Décision de prospection\nÀ explorer.",
-            steps=[
+            output=[
                 SimpleNamespace(
-                    type="model_output",
+                    type="message",
                     content=[
                         SimpleNamespace(
-                            type="text",
+                            type="output_text",
                             annotations=[SimpleNamespace(type="url_citation", url="https://example.com", title="Exemple")],
                         )
                     ],
@@ -152,16 +152,17 @@ class GeminiResearcherTests(unittest.TestCase):
             ],
         )
         client = _FakeClient(response)
-        researcher = GeminiB2BResearcher("test-key", "gemini-test", client_factory=lambda: client)
+        researcher = OpenAIB2BResearcher("test-key", client_factory=lambda: client)
         company = Company("Entreprise Test", "", "Services", "Kinshasa", "", "D-1")
 
         report = researcher.research(company, "- Audit numérique")
 
         self.assertEqual(report.text, "## Décision de prospection\nÀ explorer.")
         self.assertEqual(report.sources[0].url, "https://example.com")
-        self.assertEqual(client.calls[0]["model"], "gemini-test")
+        self.assertEqual(client.calls[0]["model"], "gpt-6-luna")
         self.assertIn("Audit numérique", client.calls[0]["input"])
-        self.assertEqual(client.calls[0]["tools"], [{"type": "google_search"}])
+        self.assertEqual(client.calls[0]["tools"], [{"type": "web_search"}])
+        self.assertEqual(client.calls[0]["tool_choice"], "required")
         self.assertFalse(client.calls[0]["store"])
 
     def test_explains_that_a_429_is_a_quota_problem_not_an_invalid_key(self):
@@ -169,8 +170,14 @@ class GeminiResearcherTests(unittest.TestCase):
 
         message = str(_provider_error(error))
 
-        self.assertIn("clé est reconnue", message)
-        self.assertIn("quota Gemini", message)
+        self.assertIn("quota OpenAI", message)
+        self.assertNotIn("clé OpenAI est refusée", message)
+
+    def test_rejects_missing_key_without_calling_client(self):
+        researcher = OpenAIB2BResearcher("", client_factory=lambda: self.fail("client called"))
+        company = Company("Entreprise Test", "", "Services", "Kinshasa", "", "D-1")
+        with self.assertRaisesRegex(Exception, "OPENAI"):
+            researcher.research(company, "- Audit numérique")
 
 
 if __name__ == "__main__":
