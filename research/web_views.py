@@ -13,6 +13,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from .forms import HumanBenchmarkCaseForm
+from .company_profile import company_profile_view
 from .lead_qualification import (
     LeadEvidence,
     LeadQualificationError,
@@ -248,7 +249,10 @@ def run_detail(request: HttpRequest, run_id: int) -> HttpResponse:
         "rejected_evidence": rejected,
         "discovered_sources": discovered_sources,
         "attempts": attempts,
-        "ai_summary": _ai_summary_view(run.ai_summary, evidence_links),
+        "ai_summary": _ai_summary_view(run.ai_summary, relevant),
+        "company_profile": company_profile_view(
+            run.ai_summary, run.seed_snapshot.get("input_snapshot", {}), relevant,
+        ),
         "sector_segmentation": _sector_segmentation_view(sector_segmentation, evidence_links),
         "lead_qualification": _lead_qualification_view(lead_qualification, evidence_links),
         "is_active": run.state in {ResearchRun.State.QUEUED, ResearchRun.State.RESEARCHING},

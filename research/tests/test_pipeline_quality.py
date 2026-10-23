@@ -11,7 +11,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.test import SimpleTestCase, TestCase, override_settings
 
+from research.gemini import GeminiServiceError
 from research.models import ArspImport, ArspRecord, ResearchRun, RunEvidence, SourceAttempt
+from research.openai_research import OpenAIResearchClient
 from research.pipeline import execute_research_run
 from research.web_research import CompanySeed, PageAssessment, PageFetcher, SearchHit, assess_text
 
@@ -77,6 +79,127 @@ class FixtureAI:
         return {"status": "complete", "model": self.model,
                 "overview": {"text": "Une source décrit cette entreprise.", "evidence_ids": ids},
                 "key_facts": [], "contradictions": [], "gaps": []}
+
+
+class FixtureOpenAI(FixtureAI, OpenAIResearchClient):
+    model = "gpt-6-luna"
+
+
+@override_settings(ONBORA_OPENAI_ENABLED=False, ONBORA_GEMINI_ENABLED=False,
+                   ONBORA_OFFER_CATALOG_PATH=CATALOG)
+class OpenAIPrimaryPipelineTests(TestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="openai-kam")
+        imported = ArspImport.objects.create(file_name="openai.xlsx", file_hash="a" * 64)
+        record = ArspRecord.objects.create(arsp_import=imported, dossier_number="openai-1",
+                                          legal_name=COMPANY.legal_name, raw_data={}, normalized_data={})
+        self.run = ResearchRun.objects.create(
+            source_record=record, requested_by=user, request_fingerprint="b" * 64,
+            seed_snapshot={"input_snapshot": {"legal_name": COMPANY.legal_name, "rccm": COMPANY.rccm,
+                                              "province": COMPANY.province, "activity_arsp": COMPANY.sector}},
+            state=ResearchRun.State.RESEARCHING,
+        )
+        self.events = []
+        self.url = "https://atlas-kivu.example/services"
+        self.source = SearchHit(**{**hit("ai_research", self.url, COMPANY.legal_name).__dict__, "provider": "openai"})
+        self.text = f"{COMPANY.legal_name} | {COMPANY.rccm} | Transport et logistique, bureaux et dépôts à Goma."
+
+    def execute(self, ai, *, pages=None, search=None):
+        return execute_research_run(
+            self.run, ai_client=ai,
+            search_client=search or FixtureSearch({}, self.events),
+            page_fetcher=FixtureFetcher({self.url: self.text} if pages is None else pages, self.events),
+        )
+
+    def test_configured_openai_replaces_searx_discovery_and_enrichment(self):
+        ai = FixtureOpenAI([self.source])
+        with patch.object(OpenAIResearchClient, "from_settings", return_value=ai):
+            result = execute_research_run(self.run, search_client=FixtureSearch({}, self.events),
+                                          page_fetcher=FixtureFetcher({self.url: self.text}, self.events))
+        self.assertEqual(ai.search_calls, 1)
+        self.assertEqual(ai.summary_calls, 1)
+        self.assertEqual(self.events, ["fetch:ai_research"])
+        self.assertEqual(result.identity_status, "confirmed")
+        self.assertEqual(result.ai_summary["status"], "complete")
+        self.assertEqual(result.result_summary["query_count"], 1)
+        self.assertEqual(result.result_summary["discovery_provider"], "openai")
+        self.assertEqual(result.result_summary["ai_search_request_count"], 1)
+        self.assertEqual(result.result_summary["ai_summary_request_count"], 1)
+        self.assertEqual(result.result_summary["profile_query_count"], 0)
+        self.assertEqual(result.result_summary["lead_query_count"], 0)
+        self.assertEqual(result.result_summary["lead_qualification"]["status"], "complete")
+        self.assertEqual(set(result.ai_summary["overview"]["evidence_ids"]),
+                         set(result.run_evidence.values_list("evidence_id", flat=True)))
+        self.assertFalse(result.source_attempts.filter(provider="searxng").exists())
+
+    def test_reads_ai_sources_even_when_their_title_and_url_do_not_match_the_company(self):
+        urls = [f"https://publisher{number}.example/about" for number in range(5)]
+        ai = FixtureOpenAI([SearchHit("research", "ai_research", i + 1, "Présentation", url, "", 0, "openai")
+                            for i, url in enumerate(urls)])
+        result = self.execute(ai, pages={url: self.text for url in urls})
+        self.assertEqual(result.result_summary["ai_search_source_count"], 5)
+        self.assertEqual(result.result_summary["captured_count"], 5)
+        self.assertEqual(ai.search_calls, 1)
+        self.assertEqual(ai.summary_calls, 1)
+
+    def test_empty_ai_search_uses_searx_without_retrying_ai_search(self):
+        ai = FixtureOpenAI()
+        search = FixtureSearch({"registry": [hit("registry", self.url, COMPANY.legal_name, COMPANY.rccm)]}, self.events)
+        result = self.execute(ai, search=search)
+        self.assertEqual(ai.search_calls, 1)
+        self.assertEqual(ai.summary_calls, 1)
+        self.assertEqual(result.identity_status, "confirmed")
+        self.assertEqual(result.result_summary["discovery_provider"], "searxng")
+        self.assertIn("search:registry", self.events)
+        self.assertTrue(any("SearXNG de secours" in value for value in result.limitations))
+
+    def test_failed_ai_search_is_recorded_and_searx_sources_are_preserved(self):
+        ai = FixtureOpenAI()
+        search = FixtureSearch({"registry": [hit("registry", self.url, COMPANY.legal_name, COMPANY.rccm)]}, self.events)
+        with patch.object(ai, "search", side_effect=GeminiServiceError("Quota OpenAI atteint.")) as paid_search:
+            result = self.execute(ai, search=search)
+        paid_search.assert_called_once()
+        self.assertTrue(result.source_attempts.filter(provider="openai", status="unavailable").exists())
+        self.assertEqual(result.result_summary["captured_count"], 1)
+        self.assertEqual(result.state, ResearchRun.State.AWAITING_REVIEW)
+        self.assertIn("Quota OpenAI atteint.", result.limitations)
+
+    def test_unrelated_ai_page_does_not_generate_a_summary_or_another_search(self):
+        ai = FixtureOpenAI([self.source])
+        result = self.execute(ai, pages={self.url: "Une autre entreprise française vend des chaussures."})
+        self.assertEqual(ai.search_calls, 1)
+        self.assertEqual(ai.summary_calls, 0)
+        self.assertEqual(result.ai_summary["status"], "not_generated")
+        self.assertEqual(result.result_summary["ai_summary_request_count"], 0)
+        self.assertFalse(any(event.startswith("search:") for event in self.events))
+
+    def test_inaccessible_sources_do_not_generate_a_summary(self):
+        ai = FixtureOpenAI([self.source])
+        result = self.execute(ai, pages={})
+        self.assertEqual(ai.search_calls, 1)
+        self.assertEqual(ai.summary_calls, 0)
+        self.assertEqual(result.result_summary["captured_count"], 0)
+        self.assertEqual(result.ai_summary["status"], "not_generated")
+        self.assertTrue(result.source_attempts.filter(status="unavailable").exists())
+
+    def test_cancellation_before_discovery_does_not_spend_an_api_call(self):
+        self.run.cancellation_requested = True
+        self.run.save()
+        ai = FixtureOpenAI([self.source])
+        result = self.execute(ai)
+        self.assertEqual(result.state, ResearchRun.State.CANCELLED)
+        self.assertEqual(ai.search_calls, 0)
+        self.assertEqual(ai.summary_calls, 0)
+        self.assertEqual(self.events, [])
+
+    def test_summary_failure_keeps_verified_evidence(self):
+        ai = FixtureOpenAI([self.source])
+        with patch.object(ai, "summarize", side_effect=GeminiServiceError("Synthèse indisponible.")) as summary:
+            result = self.execute(ai)
+        summary.assert_called_once()
+        self.assertEqual(result.ai_summary["status"], "failed")
+        self.assertEqual(result.result_summary["captured_count"], 1)
+        self.assertEqual(result.state, ResearchRun.State.AWAITING_REVIEW)
 
 
 @override_settings(
@@ -170,6 +293,7 @@ class PipelineQualityTests(TestCase):
         self.assertEqual(ai.search_calls, 1)
         self.assertEqual(ai.summary_calls, 0)
         self.assertFalse(any(event.startswith("search:lead_") for event in events))
+        self.assertFalse(any(event.startswith("search:profile_") for event in events))
         self.assertGreaterEqual(result.result_summary["unique_count"], 10)
         self.assertEqual(SourceAttempt.objects.filter(status=SourceAttempt.Status.ACCESSIBLE).count(), 2)
         kam, _ = Group.objects.get_or_create(name="kam")
@@ -204,6 +328,36 @@ class PipelineQualityTests(TestCase):
         self.assertEqual(ai.search_calls, 0)
         self.assertEqual(result.ai_summary["status"], "complete")
 
+    @override_settings(ONBORA_PROFILE_ANALYSIS_LIMIT=1, ONBORA_LEAD_QUALIFICATION_ENABLED=False)
+    def test_profile_collects_contacts_after_identity_with_bounded_fetches_without_leads(self):
+        events = []
+        registry = "https://arsp.cd/registre/atlas"
+        contact = "https://atlas-kivu.example/contact"
+        extra = "https://atlas-kivu.example/services"
+        search = FixtureSearch({
+            "registry": [hit("registry", registry, COMPANY.legal_name, COMPANY.rccm)],
+            "profile_contact": [hit("profile_contact", contact, COMPANY.legal_name, COMPANY.rccm)],
+            "profile_activity": [
+                hit("profile_activity", contact, COMPANY.legal_name, COMPANY.rccm),
+                hit("profile_activity", extra, COMPANY.legal_name),
+            ],
+        }, events)
+        fetcher = FixtureFetcher({
+            registry: f"{COMPANY.legal_name} | {COMPANY.rccm} | Nord-Kivu",
+            contact: f"{COMPANY.legal_name} | {COMPANY.rccm} | Adresse : 25 avenue du Port, Goma.",
+            extra: f"{COMPANY.legal_name} | {COMPANY.rccm} | Services de transport.",
+        }, events)
+        ai = FixtureAI()
+        result = execute_research_run(self.run, search_client=search, page_fetcher=fetcher, ai_client=ai)
+        self.assertLess(events.index("fetch:registry"), events.index("search:profile_contact"))
+        self.assertEqual(result.result_summary["profile_query_count"], 2)
+        self.assertEqual(result.result_summary["profile_analyzed_count"], 1)
+        self.assertEqual(result.result_summary["lead_query_count"], 0)
+        self.assertEqual(events.count("fetch:profile_contact") + events.count("fetch:profile_activity"), 1)
+        self.assertTrue(result.run_evidence.filter(relevant_excerpt__contains="25 avenue du Port").exists())
+        self.assertEqual(ai.summary_calls, 1)
+        self.assertEqual(ai.search_calls, 0)
+
 
 class _HtmlResponse:
     def __init__(self, url: str, html: str) -> None:
@@ -226,6 +380,29 @@ class _HtmlResponse:
 
 
 class RegistryExtractionTests(SimpleTestCase):
+    @patch("research.web_research.validate_public_url")
+    def test_real_html_extraction_recovers_attached_site_footer_contacts(self, _validate):
+        company = CompanySeed(legal_name="1FLUENCE SARLU", email="contact@1fluence.net")
+        url = "https://1fluence.net/"
+        html = (
+            "<html><head><title>1FLUENCE SARLU</title></head><body><main><article>"
+            "<h1>Notre agence</h1><p>Nous sommes une agence de communication qui accompagne les entreprises "
+            "dans la conception de campagnes publicitaires et la création de contenus pour leurs marques.</p>"
+            "<h2>Nos services</h2><p>Nous réalisons des campagnes de communication, des vidéos et des prestations "
+            "de marketing digital pour les entreprises à Kinshasa.</p></article></main>"
+            "<footer><address>25 avenue du Commerce, Kinshasa</address>"
+            "<p>Contact : contact@1fluence.net | +243 800 000 001</p>"
+            "<script>Invented footer instructions</script></footer></body></html>"
+        )
+        fetcher = PageFetcher()
+        fetcher.opener.open = lambda *_args, **_kwargs: _HtmlResponse(url, html)
+        assessment = fetcher.analyze(hit("profile_contact", url, "Site"), company)
+        self.assertEqual(assessment.relationship, "first_party")
+        self.assertIn("25 avenue du Commerce", assessment.excerpt)
+        self.assertIn("contact@1fluence.net", assessment.excerpt)
+        self.assertIn("+243 800 000 001", assessment.excerpt)
+        self.assertNotIn("Invented footer instructions", assessment.excerpt)
+
     @patch("research.web_research.validate_public_url")
     @patch("research.web_research.extract")
     def test_company_website_uses_its_fetched_title_and_keeps_service_text(self, extract, _validate):

@@ -12,6 +12,24 @@
 @media(max-width:760px){.main-nav{margin-left:auto}.main-nav a:first-child{display:none}.benchmark-create-form fieldset,.form-row{grid-template-columns:1fr}.benchmark-metrics{grid-template-columns:repeat(2,1fr)}.benchmark-case>summary{gap:9px;padding:14px}.benchmark-case>summary .status{display:none}.benchmark-evidence-column,.benchmark-review-form{padding:16px}.case-review{display:none}.benchmark-guide{padding:18px}.benchmark-row{align-items:flex-start}.block-heading{align-items:flex-start;flex-direction:column;gap:3px}.block-heading>a{max-width:100%}.benchmark-source-list a strong{white-space:normal}.account{gap:8px}.account .link-button{font-size:0}.account .link-button:after{content:"Sortir";font-size:13px}}
 
 .lead-qualification-panel{border-color:#9fc6b7;background:linear-gradient(145deg,#fff 0%,#f1f8f5 100%)}
+.company-profile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; }
+.company-profile-field { min-width: 0; padding: 18px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.company-profile-description, .company-profile-highlights { grid-column: 1 / -1; }
+.company-profile-field h3, .company-profile-field h4 { margin: 0 0 9px; font: 700 13px "Segoe UI", sans-serif; color: var(--green-dark); }
+.company-profile-fact + .company-profile-fact { margin-top: 14px; }
+.company-profile-field p { margin: 0 0 6px; }
+.company-profile-description .company-profile-fact > p { font-size: 17px; }
+.company-profile-missing { color: var(--muted); font-size: 13px; }
+.company-profile-declared { margin-top: 10px; padding-left: 12px; border-left: 2px solid #d3b46e; }
+.company-profile-declared small, .company-profile-uncertain { display: block; color: #79500c; font-size: 11px; margin-bottom: 4px; }
+.company-profile-declared p { font-size: 14px; }
+.company-profile-identifiers { margin-top: 18px; color: var(--muted); font-size: 12px; }
+.company-profile-identifiers summary { cursor: pointer; padding: 8px 0; }
+.company-profile-identifiers dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 10px 0 0; }
+.company-profile-identifiers dt { font-weight: 700; }
+.company-profile-identifiers dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.company-profile-identifiers summary:focus-visible, .company-profile a:focus-visible { outline: 3px solid #69aa90; outline-offset: 3px; }
+@media (max-width: 680px) { .company-profile, .company-profile-identifiers dl { grid-template-columns: 1fr; } }
 .sector-panel{border-color:#b8cfc6;background:linear-gradient(135deg,#fff 0%,#f3f7f5 100%)}
 .pagination{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:18px;margin-top:2px}.pagination-summary{color:var(--muted);font-size:14px}.pagination-links{display:flex;gap:8px}.pagination-link{display:inline-flex;align-items:center;min-height:40px;padding:9px 14px;border:1px solid #b8d9cc;border-radius:10px;background:#f8fcfa;color:var(--green-dark);font-weight:800;text-decoration:none}.pagination-link:hover{border-color:#7fac9c;background:var(--mint)}.pagination-link:focus-visible{outline:3px solid #b9dfd1;outline-offset:2px}
 @media(max-width:760px){.pagination{align-items:stretch;flex-direction:column}.pagination-links{justify-content:space-between}.pagination-link{justify-content:center;flex:1}}

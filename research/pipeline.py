@@ -19,6 +19,7 @@ from .web_research import (
     SearchHit,
     SearxngClient,
     build_lead_query_plan,
+    build_profile_query_plan,
     build_query_plan,
     canonicalize_url,
     company_from_snapshot,
@@ -130,6 +131,51 @@ def execute_research_run(
     engine_warnings: list[str] = []
     ai_search_attempted = False
     ai_search_count = 0
+    ai_primary = isinstance(ai_client, OpenAIResearchClient)
+    ai_discovery_used = False
+    ai_summary_attempted = False
+
+    def collect_ai_search(reason: str) -> list[SearchHit]:
+        nonlocal ai_search_attempted, ai_search_count
+        ai_search_attempted = True
+        try:
+            hits = ai_client.search(company, reason)
+        except GeminiServiceError as error:
+            limitations.append(str(error))
+            SourceAttempt.objects.create(
+                research_run=run,
+                provider="openai" if ai_primary else "gemini",
+                query=f"Recherche IA pour {company.legal_name}",
+                category="ai_research" if ai_primary else "ai_fallback",
+                status=SourceAttempt.Status.UNAVAILABLE,
+                reason=str(error),
+            )
+            return []
+        scored_hits = []
+        for hit in hits:
+            try:
+                canonicalize_url(hit.url)
+            except ValueError:
+                continue
+            score = rank_search_hit(hit.title, hit.snippet, hit.url, company)
+            scored = SearchHit(**{**hit.__dict__, "discovery_score": score})
+            scored_hits.append(scored)
+            all_hits.append(scored)
+            SourceAttempt.objects.create(
+                research_run=run,
+                provider=hit.provider,
+                query=hit.query,
+                category=hit.category,
+                url=hit.url,
+                title=hit.title,
+                snippet=hit.snippet[:2000],
+                search_rank=hit.rank,
+                relevance_score=score,
+                status=SourceAttempt.Status.RETURNED,
+                reason="Source découverte avec recherche web IA.",
+            )
+        ai_search_count = len(scored_hits)
+        return scored_hits
 
     def collect_queries(specs) -> bool:
         for spec in specs:
@@ -179,7 +225,16 @@ def execute_research_run(
                 )
         return True
 
-    if not collect_queries(plan):
+    if ai_primary:
+        run.refresh_from_db(fields=["cancellation_requested"])
+        if run.cancellation_requested:
+            return _cancel_run(run)
+        ai_discovery_used = bool(collect_ai_search("Recherche initiale complète en un seul appel web"))
+        if ai_discovery_used:
+            plan = []
+        else:
+            limitations.append("Recherche OpenAI sans source exploitable ; recherche SearXNG de secours.")
+    if not ai_discovery_used and not collect_queries(plan):
         return _cancel_run(run)
 
     # A structured registry contact can lead directly to the official site even
@@ -209,7 +264,7 @@ def execute_research_run(
         if current is None or (hit.discovery_score, -hit.rank) > (current.discovery_score, -current.rank):
             deduplicated[key] = hit
     ranked = sorted(deduplicated.values(), key=lambda item: (-item.discovery_score, item.rank, item.url))
-    candidates = [item for item in ranked if item.discovery_score >= 2]
+    candidates = ranked if ai_discovery_used else [item for item in ranked if item.discovery_score >= 2]
     if not candidates:
         candidates = ranked[:3]
     selected: list[SearchHit] = []
@@ -253,56 +308,24 @@ def execute_research_run(
             if any(item.verdict == "Pertinente" for item in captured):
                 break
 
-    # Search more deeply only after reading the first pages: promising snippets
-    # alone are not evidence that the right company has been found.
-    if ai_client and not any(item.verdict == "Pertinente" for item in captured):
+    # The OpenAI-first path has already spent its single search request. The
+    # legacy Gemini path can still discover sources after SearXNG fails.
+    if ai_client and not ai_search_attempted and not any(item.verdict == "Pertinente" for item in captured):
         run.refresh_from_db(fields=["cancellation_requested"])
         if run.cancellation_requested:
             return _cancel_run(run)
-        ai_search_attempted = True
         reasons = ["aucune page vérifiée comme pertinente après analyse SearXNG"]
         if failed_categories:
             reasons.append(f"requêtes indisponibles : {', '.join(failed_categories)}")
         if engine_warnings:
             reasons.append(f"moteurs bloqués ou indisponibles : {'; '.join(engine_warnings[:4])}")
-        try:
-            ai_hits = ai_client.search(company, " ; ".join(reasons))
-        except GeminiServiceError as error:
-            limitations.append(str(error))
-            SourceAttempt.objects.create(
-                research_run=run,
-                provider="openai" if isinstance(ai_client, OpenAIResearchClient) else "gemini",
-                query=f"Complément IA pour {company.legal_name}",
-                category="ai_fallback",
-                status=SourceAttempt.Status.UNAVAILABLE,
-                reason=str(error),
-            )
-        else:
-            ai_search_count = len(ai_hits)
+        ai_hits = collect_ai_search(" ; ".join(reasons))
+        if ai_hits:
             fallback_hits: dict[str, SearchHit] = {}
             for hit in ai_hits:
-                try:
-                    url = canonicalize_url(hit.url)
-                except ValueError:
-                    continue
-                score = rank_search_hit(hit.title, hit.snippet, hit.url, company)
-                scored = SearchHit(**{**hit.__dict__, "discovery_score": score})
-                all_hits.append(scored)
-                SourceAttempt.objects.create(
-                    research_run=run,
-                    provider=hit.provider,
-                    query=hit.query,
-                    category=hit.category,
-                    url=hit.url,
-                    title=hit.title,
-                    snippet=hit.snippet[:2000],
-                    search_rank=hit.rank,
-                    relevance_score=score,
-                    status=SourceAttempt.Status.RETURNED,
-                    reason="Source découverte avec recherche web IA.",
-                )
+                url = canonicalize_url(hit.url)
                 if url not in selected_urls and url not in fallback_hits:
-                    fallback_hits[url] = scored
+                    fallback_hits[url] = hit
             publisher_counts = defaultdict(int)
             fallback_count = 0
             fallback_limit = (
@@ -328,8 +351,44 @@ def execute_research_run(
                     deduplicated[url] = hit
             ranked = sorted(deduplicated.values(), key=lambda item: (-item.discovery_score, item.rank, item.url))
 
+    profile_plan = []
+    profile_count = 0
+    if not ai_discovery_used and any(item.verdict == "Pertinente" for item in captured):
+        profile_plan = build_profile_query_plan(company)
+        if not collect_queries(profile_plan):
+            return _cancel_run(run)
+        profile_candidates: dict[str, SearchHit] = {}
+        for hit in all_hits:
+            if not hit.category.startswith("profile_"):
+                continue
+            url = canonicalize_url(hit.url)
+            current = deduplicated.get(url)
+            if current is None or hit.discovery_score > current.discovery_score:
+                deduplicated[url] = hit
+            if url not in selected_urls and (
+                url not in profile_candidates or hit.discovery_score > profile_candidates[url].discovery_score
+            ):
+                profile_candidates[url] = hit
+        profile_publishers: defaultdict[str, int] = defaultdict(int)
+        for hit in sorted(profile_candidates.values(), key=lambda item: (-item.discovery_score, item.rank, item.url)):
+            publisher = _publisher(hit.url)
+            if hit.discovery_score < 2 or profile_publishers[publisher] >= 2:
+                continue
+            if profile_count >= settings.ONBORA_PROFILE_ANALYSIS_LIMIT:
+                break
+            run.refresh_from_db(fields=["cancellation_requested"])
+            if run.cancellation_requested:
+                return _cancel_run(run)
+            selected.append(hit)
+            selected_urls.add(canonicalize_url(hit.url))
+            profile_publishers[publisher] += 1
+            profile_count += 1
+            if evidence := _capture_hit(run, hit, len(selected), company, page_fetcher, limitations):
+                captured.append(evidence)
+        ranked = sorted(deduplicated.values(), key=lambda item: (-item.discovery_score, item.rank, item.url))
+
     lead_plan = []
-    if settings.ONBORA_LEAD_QUALIFICATION_ENABLED and any(item.verdict == "Pertinente" for item in captured):
+    if not ai_discovery_used and settings.ONBORA_LEAD_QUALIFICATION_ENABLED and any(item.verdict == "Pertinente" for item in captured):
         lead_plan = build_lead_query_plan(company)
         if not collect_queries(lead_plan):
             return _cancel_run(run)
@@ -391,6 +450,7 @@ def execute_research_run(
             "message": "Aucune page analysée ne relie suffisamment cette source à l’entreprise. Aucun résumé n’a été généré.",
         }
     elif ai_client:
+        ai_summary_attempted = True
         try:
             ai_summary = ai_client.summarize(
                 company,
@@ -455,7 +515,7 @@ def execute_research_run(
     for item in captured:
         verdict_counts[item.verdict] += 1
     summary = {
-        "query_count": len(plan) + len(lead_plan),
+        "query_count": len(plan) + len(profile_plan) + len(lead_plan) + int(ai_search_attempted),
         "returned_count": len(all_hits),
         "unique_count": len(ranked),
         "analyzed_count": len(selected),
@@ -466,7 +526,12 @@ def execute_research_run(
         "verdict_counts": dict(verdict_counts),
         "ai_search_attempted": ai_search_attempted,
         "ai_search_source_count": ai_search_count,
+        "discovery_provider": "openai" if ai_discovery_used else "searxng",
+        "ai_search_request_count": int(ai_search_attempted),
+        "ai_summary_request_count": int(ai_summary_attempted),
         "lead_query_count": len(lead_plan),
+        "profile_query_count": len(profile_plan),
+        "profile_analyzed_count": profile_count,
         "sector_segmentation": sector_segmentation,
         "lead_qualification": lead_qualification,
     }

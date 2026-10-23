@@ -63,6 +63,35 @@
       update();
       notice.textContent = selected.size === 5 ? "Les 5 entreprises sont sélectionnées. Tu peux lancer le lot." : selected.size + " entreprise(s) sélectionnée(s).";
     });
+    const randomButton = document.getElementById("random-selection");
+    randomButton.disabled = false;
+    randomButton.addEventListener("click", async () => {
+      randomButton.disabled = true;
+      randomButton.textContent = "Tirage en cours…";
+      notice.textContent = "Sélection aléatoire en cours…";
+      const url = new URL(location.href);
+      url.search = "";
+      url.searchParams.set("q", document.getElementById("multi-query").value);
+      url.searchParams.set("random", "1");
+      try {
+        const response = await fetch(url, {headers: {"Accept": "application/json"}});
+        if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) throw new Error();
+        const data = await response.json();
+        if (!data.companies.length) {
+          notice.textContent = "Aucune entreprise trouvée pour ce tirage. Ta sélection est conservée.";
+          return;
+        }
+        selected.clear();
+        for (const company of data.companies) selected.set(company.id, company.name);
+        update();
+        notice.textContent = selected.size + " entreprise(s) sélectionnée(s) au hasard. Tu peux modifier la sélection ou lancer les recherches.";
+      } catch {
+        notice.textContent = "Impossible de tirer les entreprises au hasard. Réessaie. Ta sélection est conservée.";
+      } finally {
+        randomButton.disabled = false;
+        randomButton.textContent = "Sélectionner 5 au hasard";
+      }
+    });
     let filterRequest;
     const load = async (url) => {
       filterRequest?.abort();

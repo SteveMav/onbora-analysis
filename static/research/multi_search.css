@@ -57,6 +57,7 @@
 .multi-findings, .multi-offers { padding: 26px; min-width: 0; }
 .multi-report-body h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 16px; color: var(--green); }
 .multi-overview { font-size: 17px; margin-top: 0; }
+.multi-report-body .multi-summary-heading { margin-top: 28px; }
 .multi-fact { margin-top: 18px; }
 .multi-fact p { margin: 0 0 7px; }
 .multi-fact small { color: var(--muted); }

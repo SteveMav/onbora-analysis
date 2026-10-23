@@ -1,0 +1,166 @@
+{% extends "research/base.html" %}
+{% load static %}
+{% block title %}Recherche SerpApi · Onbora{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{% static 'research/serpapi.css' %}">
+<script src="{% static 'research/serpapi.js' %}" defer></script>
+{% endblock %}
+{% block content %}
+<header class="serp-heading">
+  <p class="eyebrow">Laboratoire de recherche · RDC</p>
+  <h1>Recherche SerpApi</h1>
+  <p class="lead">Découvre des entreprises et explore leurs activités, leurs projets et leurs sources publiques.</p>
+</header>
+
+<div class="serp-connection">
+  <div>
+    <strong>{% if configured %}Clé SerpApi configurée{% else %}Clé SerpApi à configurer{% endif %}</strong>
+    <p>{% if configured %}Recherche complète : Web + Maps + News, jusqu’à 3 crédits hors cache. Un moteur seul : jusqu’à 1 crédit.{% else %}Ajoute <code>SERPAPI_API_KEY=ta_cle</code> dans le fichier <code>.env</code> à la racine du projet, puis redémarre Onbora.{% endif %}</p>
+  </div>
+  <form method="post" action="{% url 'serpapi-search' %}">{% csrf_token %}
+    <input type="hidden" name="action" value="account">
+    <button type="submit" class="button secondary" {% if not configured %}disabled{% endif %}>Vérifier mon quota</button>
+    <small>Consultation gratuite du compte</small>
+  </form>
+</div>
+{% if account_error %}<p class="alert danger" role="alert">{{ account_error }}</p>{% endif %}
+{% if quota_checked %}
+<p class="alert warning" role="status">
+  Quota au moment de la vérification : <strong>{{ quota.total_searches_left|default_if_none:"non communiqué" }}</strong> recherches restantes.
+  Consommation mensuelle : {{ quota.this_month_usage|default_if_none:"non communiquée" }} / {{ quota.searches_per_month|default_if_none:"non communiqué" }}.
+</p>
+{% endif %}
+
+<div class="serp-layout">
+  <section class="panel serp-form-panel" aria-labelledby="search-title">
+    <div class="panel-heading"><h2 id="search-title">Préparer un essai</h2></div>
+    <fieldset class="serp-source-choice">
+      <legend>{{ form.company_source.label }}</legend>
+      {{ form.company_source }}{{ form.company_source.errors }}
+    </fieldset>
+    <noscript><p><a href="?company_source=arsp">Choisir dans la base ARSP</a> · <a href="{% url 'serpapi-search' %}">Saisie libre</a></p></noscript>
+    <div id="serp-arsp-picker" class="serp-arsp-picker" {% if company_source != 'arsp' %}hidden{% endif %}>
+      {% if selected_company %}
+        <div class="serp-selected-company" role="status">
+          <strong>Entreprise sélectionnée : {{ selected_company.name }}</strong>
+          <p>Dossier {{ selected_company.dossier }}{% if selected_company.province %} · {{ selected_company.province }}{% endif %}</p>
+          <a href="{% url 'serpapi-search' %}?company_source=arsp&amp;arsp_q={{ arsp_query|urlencode }}">Changer d’entreprise</a>
+        </div>
+      {% else %}
+        <form method="get" action="{% url 'serpapi-search' %}" class="serp-arsp-search">
+          <input type="hidden" name="company_source" value="arsp">
+          <label for="arsp-q">Nom, nom commercial, RCCM ou numéro de dossier</label>
+          <div><input type="search" id="arsp-q" name="arsp_q" value="{{ arsp_query }}" maxlength="200" placeholder="Rechercher dans l’import ARSP actif…"><button type="submit" class="button secondary">Filtrer</button></div>
+        </form>
+        <p class="serp-help">{{ arsp_page.paginator.count }} entreprise(s) · sélectionne une seule entreprise. Ce filtre ne consomme aucun crédit SerpApi.</p>
+        <ul class="serp-arsp-list">
+          {% for record in arsp_page %}
+            <li><div><strong>{{ record.display_legal_name }}</strong><small>Dossier {{ record.dossier_number }}{% if record.raw_data.Province %} · {{ record.raw_data.Province }}{% endif %}</small></div><a class="button secondary" href="{% url 'serpapi-search' %}?record={{ record.pk }}&amp;arsp_q={{ arsp_query|urlencode }}">Choisir<span class="sr-only"> {{ record.display_legal_name }}</span></a></li>
+          {% empty %}<li class="muted">{% if arsp_query %}Aucune entreprise ne correspond à ce filtre.{% else %}La base ARSP est vide. Tu peux utiliser la saisie libre.{% endif %}</li>{% endfor %}
+        </ul>
+        {% if arsp_page.has_other_pages %}<nav class="serp-arsp-pagination" aria-label="Pages des entreprises ARSP">{% if arsp_page.has_previous %}<a href="?company_source=arsp&amp;arsp_q={{ arsp_query|urlencode }}&amp;arsp_page={{ arsp_page.previous_page_number }}">Précédente</a>{% endif %}<span>Page {{ arsp_page.number }} / {{ arsp_page.paginator.num_pages }}</span>{% if arsp_page.has_next %}<a href="?company_source=arsp&amp;arsp_q={{ arsp_query|urlencode }}&amp;arsp_page={{ arsp_page.next_page_number }}">Suivante</a>{% endif %}</nav>{% endif %}
+      {% endif %}
+    </div>
+    <form method="post" action="{% url 'serpapi-create' %}" id="serp-search-form" class="serp-form">
+      {% csrf_token %}{{ form.submission_id }}{{ form.record_id }}
+      {% if form.non_field_errors %}<div class="form-errors" role="alert">{{ form.non_field_errors }}</div>{% endif %}
+      {% if form.submission_id.errors %}<div class="form-errors" role="alert">{{ form.submission_id.errors }} Recharge la page pour réessayer.</div>{% endif %}
+      {% if form.record_id.errors %}<div class="form-errors" role="alert">{{ form.record_id.errors }}</div>{% endif %}
+      <div class="serp-field">
+        {{ form.scenario.label_tag }}{{ form.scenario }}{{ form.scenario.errors }}
+      </div>
+      <div class="serp-query-helper" id="serp-query-helper" hidden>
+        <div class="serp-pair">
+          <div class="serp-field"><label for="serp-subject">Entreprise ou activité</label><input id="serp-subject" value="{{ company_subject }}" maxlength="512" placeholder="Ex. cliniques, banques ou nom d’entreprise"></div>
+          <div class="serp-field"><label for="serp-city">Ville / zone</label><input id="serp-city" value="{{ company_city }}" maxlength="100" placeholder="Ex. Lubumbashi"></div>
+        </div>
+        <button type="button" class="button secondary" id="serp-build-query">Préparer la requête</button>
+        <p id="serp-scenario-hint" class="serp-help">Trouver des établissements et leurs coordonnées publiques.</p>
+      </div>
+      <div class="serp-field">
+        {{ form.query.label_tag }}{{ form.query }}{{ form.query.errors }}
+        <small>En recherche complète, cette requête est envoyée aux trois moteurs. Privilégie le nom de l’entreprise et sa ville. Les opérateurs comme <code>site:</code> sont surtout utiles avec Google Web seul.</small>
+      </div>
+      <div class="serp-pair">
+        <div class="serp-field">{{ form.engine.label_tag }}{{ form.engine }}{{ form.engine.errors }}</div>
+        <div class="serp-field">{{ form.language.label_tag }}{{ form.language }}{{ form.language.errors }}</div>
+      </div>
+      <details class="serp-options" {% if form.coordinates.errors %}open{% endif %}>
+        <summary>Localisation et paramètres</summary>
+        <div class="serp-field">{{ form.country.label_tag }}{{ form.country }}{{ form.country.errors }}</div>
+        <div class="serp-field">{{ form.coordinates.label_tag }}{{ form.coordinates }}{{ form.coordinates.errors }}<small>{{ form.coordinates.help_text }}</small></div>
+        <p class="serp-help">Le pays et les coordonnées orientent le classement. Vérifie la localisation de chaque résultat.</p>
+      </details>
+      <button class="button primary serp-submit" type="submit" {% if not configured %}disabled{% endif %}>Lancer la recherche SerpApi</button>
+      <p class="serp-help" id="serp-progress" role="status" aria-live="polite">Recherche complète : 3 appels. Moteur seul : 1 appel. Aucun appel IA ni relance automatique.</p>
+    </form>
+  </section>
+
+  <aside class="serp-sidebar">
+    <section class="serp-guide" aria-labelledby="guide-title">
+      <p class="eyebrow">Ce qu’on peut tester</p>
+      <h2 id="guide-title">Quatre angles de recherche</h2>
+      <p><strong>Recherche complète</strong> lance Web, Maps et News en parallèle. Les résultats restent identifiés par moteur ; si l’un échoue, les autres sont conservés.</p>
+      <dl>
+        <dt>Découverte · Maps</dt><dd>Des entreprises par activité et par ville, avec site, adresse et téléphone lorsqu’ils sont publiés.</dd>
+        <dt>Profil · Web</dt><dd>Site officiel, activité, services, implantations et mentions de l’entreprise.</dd>
+        <dt>Actualités · News</dt><dd>Projets, ouvertures, partenariats et événements relayés par la presse.</dd>
+        <dt>Technologies · Web</dt><dd>Indices publics de fournisseurs, de réseaux et de projets numériques.</dd>
+      </dl>
+      <p class="serp-help">Une entreprise découverte n’est pas forcément nouvellement créée. Une mention de technologie ne prouve pas un besoin d’achat. Les extraits restent à vérifier dans les sources.</p>
+      <details><summary>Documentation SerpApi</summary><p class="serp-doc-links"><a href="https://serpapi.com/search-api" target="_blank" rel="noopener noreferrer">Google Web</a> · <a href="https://serpapi.com/google-maps-api" target="_blank" rel="noopener noreferrer">Maps</a> · <a href="https://serpapi.com/google-news-api" target="_blank" rel="noopener noreferrer">News</a> · <a href="https://serpapi.com/account-api" target="_blank" rel="noopener noreferrer">Quota</a></p></details>
+    </section>
+    <section class="serp-history" aria-labelledby="history-title">
+      <h2 id="history-title">Mes derniers essais</h2>
+      <ul>{% for item in history %}<li><a href="{% url 'serpapi-search' %}?search={{ item.pk }}"><strong>{{ item.query|truncatechars:74 }}</strong><span>{{ item.engine }} · {{ item.created_at|date:"d/m H:i" }} · {{ item.get_state_display }}</span></a></li>{% empty %}<li class="muted">Tes essais apparaîtront ici après le premier lancement.</li>{% endfor %}</ul>
+    </section>
+  </aside>
+</div>
+
+{% if current_search %}
+<section class="panel serp-results" id="serp-results" aria-labelledby="results-title">
+  <div class="panel-heading">
+    <div><p class="eyebrow">{% if current_search.engine == 'all' %}Web + Maps + News{% else %}{{ current_search.engine }}{% endif %} · {{ current_search.created_at|date:"d/m/Y H:i" }}</p><h2 id="results-title">Résultats de l’essai</h2></div>
+    {% if current_search.state == 'complete' %}<div class="serp-export"><a class="button secondary" href="{% url 'serpapi-export' current_search.pk 'csv' %}">Exporter CSV</a><a class="button secondary" href="{% url 'serpapi-export' current_search.pk 'json' %}">Exporter JSON</a></div>{% endif %}
+  </div>
+  <p class="serp-result-query">{{ current_search.query }}</p>
+  {% if current_search.report.input_company %}<p class="serp-help">Entreprise issue de l’ARSP : {{ current_search.report.input_company.name }} · dossier {{ current_search.report.input_company.dossier }}{% if current_search.report.input_company.province %} · {{ current_search.report.input_company.province }}{% endif %}</p>{% endif %}
+  {% if current_search.report.engines %}
+    <ul class="serp-engine-status" aria-label="Bilan des trois moteurs">
+      {% for engine in current_search.report.engines %}
+        <li><strong>{{ engine.label }}</strong>{% if engine.status == 'complete' %}<a href="#serp-engine-{{ engine.engine }}">{{ engine.result_count }} résultat{{ engine.result_count|pluralize }}</a><span>{{ engine.elapsed_seconds }} s</span>{% else %}<span class="serp-engine-error">Échec : {{ engine.error }}</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+    {% if current_search.report.status == 'partial' %}<p class="alert warning" role="status">Résultats partiels : {{ current_search.report.successful_request_count }} moteur(s) sur 3 ont répondu. Leurs résultats sont disponibles ci-dessous. Aucun nouvel essai automatique.</p>{% endif %}
+  {% endif %}
+  {% if current_search.state == 'failed' %}
+    <p class="alert danger" role="alert">{{ current_search.error_message }}</p>
+  {% elif current_search.state == 'running' %}
+    <p class="alert warning" role="status">Cet essai est en cours. Recharge cette page dans quelques instants pour consulter le résultat. Si le serveur a été interrompu, lance un nouvel essai.</p>
+  {% else %}
+    <p class="serp-summary">{{ current_search.report.result_count }} résultat{{ current_search.report.result_count|pluralize }} · {{ current_search.report.elapsed_seconds }} s · {{ current_search.report.request_count|default:1 }} appel{{ current_search.report.request_count|pluralize }} API · {{ current_search.report.website_count }} site(s) renseigné(s) · {{ current_search.report.address_count }} adresse(s) · {{ current_search.report.phone_count }} téléphone(s)</p>
+    <p class="serp-help">Extraits et coordonnées retournés par Google via SerpApi. Les pages sources n’ont pas été lues automatiquement. Jusqu’à 50 résultats par moteur, hors publicités.{% if current_search.engine == 'all' %} Les compteurs cumulent les trois moteurs ; une même source peut apparaître dans plusieurs sections. Les appels servis depuis le cache ou en échec ne sont pas décomptés comme des crédits consommés.{% endif %}</p>
+    {% for section in result_sections %}
+    <h3 class="serp-engine-heading" id="serp-engine-{{ section.engine }}">{{ section.label }}{% if section.status == 'failed' %} · indisponible{% endif %}</h3>
+    <ol class="serp-result-list">
+      {% for result in section.results %}
+        <li>
+          <article>
+            <p class="serp-result-meta">{{ result.kind }} · {{ result.source }}{% if result.date %} · {{ result.date }}{% endif %}</p>
+            <h4><a href="{{ result.url|default:result.website }}" target="_blank" rel="noopener noreferrer">{{ result.title }}</a></h4>
+            {% if result.snippet %}<p>{{ result.snippet }}</p>{% endif %}
+            {% if result.address or result.phone or result.category %}<dl class="serp-result-details">{% if result.category %}<div><dt>Activité Google</dt><dd>{{ result.category }}</dd></div>{% endif %}{% if result.address %}<div><dt>Adresse</dt><dd>{{ result.address }}</dd></div>{% endif %}{% if result.phone %}<div><dt>Téléphone publié</dt><dd>{{ result.phone }}</dd></div>{% endif %}</dl>{% endif %}
+            {% if result.website %}<a class="serp-website" href="{{ result.website }}" target="_blank" rel="noopener noreferrer">Site web : {{ result.website }}</a>{% endif %}
+            {% if result.kind == 'Établissement' %}<a class="serp-arsp-link" href="{% url 'dashboard' %}?q={{ result.title|urlencode }}">Comparer ce nom à la base ARSP</a>{% endif %}
+          </article>
+        </li>
+      {% empty %}<li class="empty">{% if section.status == 'failed' %}{{ section.error }}{% else %}Aucun résultat exploitable pour cette requête. Essaie un nom commercial, une activité plus large ou une autre ville.{% endif %}</li>{% endfor %}
+    </ol>
+    {% endfor %}
+    <details class="serp-options"><summary>Paramètres de cet essai</summary><dl class="serp-parameters">{% for key,value in current_search.parameters.items %}<div><dt>{{ key }}</dt><dd>{{ value }}</dd></div>{% endfor %}</dl>{% if current_search.report.search_id %}<p class="serp-help">Identifiant SerpApi : {{ current_search.report.search_id }}</p>{% endif %}</details>
+  {% endif %}
+</section>
+{% else %}
+<section class="serp-first-use"><h2>Commence par un secteur que tu connais.</h2><p>Par exemple, « entreprises logistiques Kinshasa RDC ». Compare ensuite les noms, les sites et les coordonnées trouvés avec ta connaissance du terrain et la base ARSP.</p></section>
+{% endif %}
+{% endblock %}

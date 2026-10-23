@@ -80,10 +80,16 @@ LOGOUT_REDIRECT_URL = "login"
 # Local research-provider settings. SearXNG remains replaceable and is bound to
 # localhost by the bundled Docker Compose configuration.
 ONBORA_SEARXNG_URL = os.environ.get("ONBORA_SEARXNG_URL", "http://127.0.0.1:8080")
+# Independent SerpApi test page; never selected by the regular research worker.
+ONBORA_SERPAPI_API_KEY = (
+    os.environ.get("SERPAPI_API_KEY") or os.environ.get("SERPAPI_KEY") or os.environ.get("SERPAPI", "")
+)
+ONBORA_SERPAPI_TIMEOUT_SECONDS = 35
 ONBORA_SEARCH_RESULTS_PER_QUERY = int(os.environ.get("ONBORA_SEARCH_RESULTS_PER_QUERY", "10"))
 ONBORA_ANALYSIS_LIMIT = int(os.environ.get("ONBORA_ANALYSIS_LIMIT", "8"))
 ONBORA_RESCUE_ANALYSIS_LIMIT = int(os.environ.get("ONBORA_RESCUE_ANALYSIS_LIMIT", "4"))
 ONBORA_LEAD_ANALYSIS_LIMIT = int(os.environ.get("ONBORA_LEAD_ANALYSIS_LIMIT", "4"))
+ONBORA_PROFILE_ANALYSIS_LIMIT = int(os.environ.get("ONBORA_PROFILE_ANALYSIS_LIMIT", "3"))
 ONBORA_MAX_PAGE_BYTES = int(os.environ.get("ONBORA_MAX_PAGE_BYTES", "2000000"))
 # ARSP's public registry pages can exceed 2 MB; keep their separate cap bounded.
 ONBORA_MAX_ARSP_PAGE_BYTES = int(os.environ.get("ONBORA_MAX_ARSP_PAGE_BYTES", "8000000"))
@@ -99,7 +105,8 @@ ONBORA_GEMINI_MODEL = os.environ.get("ONBORA_GEMINI_MODEL", "gemini-3.5-flash-li
 ONBORA_GEMINI_MAX_SEARCH_SOURCES = int(os.environ.get("ONBORA_GEMINI_MAX_SEARCH_SOURCES", "8"))
 ONBORA_GEMINI_TIMEOUT_MS = int(os.environ.get("ONBORA_GEMINI_TIMEOUT_MS", "45000"))
 
-# Prefer the inexpensive OpenAI path when its key is present. The local .env
+# OpenAI performs the initial complete search with one hosted web call; SearXNG
+# is the fallback when no OpenAI sources are returned. The local .env
 # historically names this variable OPENAI; also accept the SDK-standard name.
 ONBORA_OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI", "")
 ONBORA_OPENAI_ENABLED = (

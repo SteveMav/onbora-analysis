@@ -15,6 +15,7 @@
       <nav class="main-nav" aria-label="Navigation principale">
         <a href="{% url 'dashboard' %}">Recherches</a>
         {% if can_multi_search %}<a href="{% url 'multi-search' %}">Multi Search</a>{% endif %}
+        {% if can_multi_search %}<a href="{% url 'serpapi-search' %}" {% if request.resolver_match.url_name == 'serpapi-search' %}aria-current="page"{% endif %}>SerpApi</a>{% endif %}
         {% if can_run_benchmarks %}<a href="{% url 'benchmark-list' %}">Benchmark humain</a>{% endif %}
       </nav>
       <div class="account">

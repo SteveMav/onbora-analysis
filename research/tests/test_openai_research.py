@@ -26,18 +26,32 @@ class OpenAIResearchTests(SimpleTestCase):
         ])
 
         hits = OpenAIResearchClient(api_key="test", model="gpt-6-luna").search(
-            CompanySeed(legal_name="Entreprise Test"), "aucune preuve"
+            CompanySeed(legal_name="Entreprise Test", trade_name="Marque Test",
+                        rccm="CD/KIN/26-B-001", tax_number="A12345",
+                        province="Kinshasa", address="25 avenue du Port",
+                        sector="Transport"), "recherche initiale"
         )
 
         self.assertEqual([hit.url for hit in hits], [
             "https://example.com/company", "https://news.example/story",
         ])
         self.assertTrue(all(hit.provider == "openai" for hit in hits))
+        self.assertTrue(all(hit.category == "ai_research" for hit in hits))
+        client.responses.create.assert_called_once()
         options = client.responses.create.call_args.kwargs
         self.assertEqual(options["model"], "gpt-6-luna")
         self.assertEqual(options["max_tool_calls"], 1)
         self.assertEqual(options["tools"], [{"type": "web_search", "search_context_size": "low"}])
         self.assertFalse(options["store"])
+        for value in ("Marque Test", "CD/KIN/26-B-001", "A12345", "25 avenue du Port", "Transport",
+                      "produits et services", "contacts professionnels", "Orange RDC",
+                      "seul appel", "N'invente ni fait ni URL"):
+            self.assertIn(value, options["input"])
+
+    @patch("openai.OpenAI")
+    def test_sdk_does_not_retry_paid_search_requests(self, sdk_factory):
+        OpenAIResearchClient(api_key="test", model="gpt-6-luna", timeout=45)._client()
+        sdk_factory.assert_called_once_with(api_key="test", timeout=45, max_retries=0)
 
     @patch.object(OpenAIResearchClient, "_client")
     def test_summary_is_sourced_and_does_not_search_again(self, client_factory):
@@ -50,7 +64,7 @@ class OpenAIResearchTests(SimpleTestCase):
             "gaps": ["RCCM non confirmé"],
         }))
         evidence = SummaryEvidence(12, "Source", "https://example.com", "example.com", "other",
-                                   "independent", "À vérifier", "Entreprise Test est mentionnée.")
+                                   "independent", "À vérifier", "Entreprise Test est mentionnée. " + "texte " * 250 + "Adresse : 25 avenue du Port.")
 
         result = OpenAIResearchClient(api_key="test", model="gpt-6-luna").summarize(
             CompanySeed(legal_name="Entreprise Test"), [evidence]
@@ -63,3 +77,8 @@ class OpenAIResearchTests(SimpleTestCase):
         prompt = client.responses.create.call_args.kwargs["input"]
         self.assertIn('"relationship": "independent"', prompt)
         self.assertIn("Domaine du contact déclaré ARSP", prompt)
+        self.assertIn("Adresse : 25 avenue du Port.", prompt)
+        schema = client.responses.create.call_args.kwargs["text"]["format"]["schema"]
+        self.assertIn("company_profile", schema["required"])
+        self.assertFalse(schema["properties"]["company_profile"]["additionalProperties"])
+        self.assertIn("address", schema["properties"]["company_profile"]["required"])

@@ -15,6 +15,7 @@ from django.template.loader import render_to_string
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import ArspImport, ArspRecord, ResearchBatch, ResearchBatchItem, ResearchRun
+from .company_profile import company_profile_view
 from .permissions import has_role
 from .services import create_or_get_active_run
 from .web_views import _ai_summary_view, _lead_qualification_view
@@ -34,6 +35,11 @@ def selection(request):
         records = latest_import.records.all()
         if query:
             records = records.filter(Q(legal_name__icontains=query) | Q(dossier_number__icontains=query))
+    if request.GET.get("random") == "1":
+        chosen = records.order_by("?")[:5]
+        return JsonResponse({"companies": [
+            {"id": str(record.pk), "name": record.display_legal_name} for record in chosen
+        ]})
     page = Paginator(records.order_by("legal_name", "pk"), 25).get_page(request.GET.get("page"))
     context = {
         "latest_import": latest_import, "query": query, "page_obj": page,
@@ -111,6 +117,7 @@ def _report_card(item):
         "successful": run.state in {ResearchRun.State.AWAITING_REVIEW, ResearchRun.State.REVIEWED},
         "summary": summary, "links": links, "opportunities": opportunities,
         "qualification": qualification,
+        "profile": company_profile_view(run.ai_summary, seed, links),
     }
 
 
@@ -133,6 +140,17 @@ def _report_text(cards):
         else:
             lines.append("Résumé IA indisponible. " + summary.get("message", ""))
             lines.extend(f'Extrait collecté : {link.relevant_excerpt}\nSource : {link.evidence.observed_url}' for link in card["links"][:2])
+        if card["successful"]:
+            for field in card["profile"]["fields"]:
+                lines.append(field["label"] + " :")
+                for fact in field["items"]:
+                    lines.append(fact["text"] + (" (À vérifier)" if fact["uncertain"] else ""))
+                    lines.extend(f'Source : {source["url"]}' for source in fact["sources"])
+                lines.extend(f"Registre ARSP · à confirmer : {text}" for text in field["declared"])
+                if not field["items"] and not field["declared"]:
+                    lines.append("Information non trouvée.")
+            for identifier in card["profile"]["identifiers"]:
+                lines.append(f'{identifier["label"]} (ARSP) : {identifier["text"]}')
         for journey in card["opportunities"] if card["successful"] else []:
             lines.append("Offres à explorer : " + ", ".join(offer["name"] for offer in journey["offers"]))
             lines.append(journey.get("reason", ""))

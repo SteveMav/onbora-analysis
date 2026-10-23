@@ -135,7 +135,7 @@ class Command(BaseCommand):
                 previous_state = failed.state
                 failed.state = ResearchRun.State.FAILED
                 failed.coverage = ResearchRun.Coverage.PARTIAL
-                failed.limitations = ["La collecte n’a pas pu être terminée. Vérifie SearXNG puis relance la recherche."]
+                failed.limitations = ["La collecte n’a pas pu être terminée. Vérifie la configuration du moteur de recherche puis relance la recherche."]
                 failed.completed_at = timezone.now()
                 failed.lease_owner = ""
                 failed.lease_expires_at = None

@@ -1,0 +1,24 @@
+<div class="company-profile">
+  {% for field in profile.fields %}
+  <section class="company-profile-field company-profile-{{ field.key }}">
+    <h{{ heading_level|default:4 }}>{{ field.label }}</h{{ heading_level|default:4 }}>
+    {% for item in field.items %}
+      <div class="company-profile-fact">
+        <p>{{ item.text }}</p>
+        {% if item.uncertain %}<small class="company-profile-uncertain">Rattachement à l’entreprise à vérifier</small>{% endif %}
+        <div class="citation-list">{% for source in item.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>
+      </div>
+    {% endfor %}
+    {% if field.declared %}
+      <div class="company-profile-declared"><small>Registre ARSP · à confirmer</small>{% for text in field.declared %}<p>{{ text }}</p>{% endfor %}</div>
+    {% endif %}
+    {% if not field.items and not field.declared %}<p class="company-profile-missing">Information non trouvée.</p>{% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% if profile.identifiers %}
+<details class="company-profile-identifiers">
+  <summary>Identification déclarée dans le registre ARSP</summary>
+  <dl>{% for identifier in profile.identifiers %}<div><dt>{{ identifier.label }}</dt><dd>{{ identifier.text }}</dd></div>{% endfor %}</dl>
+</details>
+{% endif %}

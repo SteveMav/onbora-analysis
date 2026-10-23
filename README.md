@@ -10,37 +10,40 @@ Django avec une persistance des recherches et des preuves.
 - rôles Django (`kam`, `reviewer`, `operator`, `admin`) et audit d’actions ;
 - création idempotente, consultation restreinte et annulation des recherches ;
 - interface web pour chercher une ligne ARSP et consulter une exécution ;
-- plan de requêtes d'identité par nom, RCCM, localisation et activité, puis
-  requêtes commerciales après une preuve d'identité pertinente ;
+- recherche initiale complète avec OpenAI, limitée à un appel web par entreprise ;
+- moteur SearXNG de secours avec requêtes d'identité puis enrichissement ;
 - déduplication et préclassement des liens avant téléchargement ;
 - inventaire complet et cliquable de toutes les URLs trouvées, même non analysées ;
 - récupération publique bornée (SSRF, redirections, MIME, taille et délai),
   avec une limite séparée pour les grandes pages ARSP ;
 - extraction ciblée des lignes ARSP et extraction Trafilatura des autres pages ;
 - stockage séparé des tentatives, captures et évaluations propres à chaque run.
-- recherche web IA quand aucune page SearXNG analysée n'est pertinente ;
+- complément Gemini facultatif sur le parcours SearXNG sans OpenAI ;
 - résumé IA séparé, dont chaque affirmation renvoie aux preuves capturées.
 - segmentation sectorielle déterministe avec niveau de confiance et preuves publiques ;
 - benchmark humain persistant sur des lots de 10 entreprises, avec comparaison
   entre les informations visibles dans les sources et le résultat Onbora.
 
 La revue humaine complète prévue par le PRD n’est pas encore activée. L’IA
-reste facultative : une panne ou un quota épuisé ne masque jamais les résultats
-SearXNG déjà obtenus.
+reste facultative : sans OpenAI, le parcours SearXNG reste disponible. Si OpenAI
+échoue ou ne renvoie aucune URL exploitable, Onbora essaie SearXNG sans répéter
+l'appel web payant. Ce secours nécessite un moteur SearXNG démarré.
 
 ## Configuration IA à faible coût
 
 Le fichier `.env` peut contenir la clé déjà nommée `OPENAI` (ou
-`OPENAI_API_KEY`). Quand elle est présente, OpenAI est utilisé avant Gemini :
+`OPENAI_API_KEY`). Quand elle est présente, OpenAI pilote la recherche initiale :
 
 ```dotenv
 OPENAI=ta_cle_api
 ```
 
 Le modèle par défaut est `gpt-6-luna`. Pour protéger un petit budget de test,
-chaque recherche de secours autorise au maximum **un appel de recherche web**,
+chaque recherche d'entreprise autorise au maximum **un appel de recherche web**,
 retient cinq URLs et ne fait aucun retry automatique. Le résumé réutilise
-uniquement les pages vérifiées, sans nouvel appel web. Réglages optionnels :
+uniquement les pages vérifiées, sans nouvel appel web. Il y a donc **un appel
+API de recherche puis, si des preuves existent, un appel API de synthèse** ;
+seul le premier a accès à la recherche web. Réglages optionnels :
 
 ```dotenv
 ONBORA_OPENAI_ENABLED=1
@@ -59,17 +62,24 @@ ONBORA_GEMINI_MAX_SEARCH_SOURCES=8
 ONBORA_GEMINI_TIMEOUT_MS=45000
 ```
 
-Après l’analyse des pages SearXNG, la recherche web IA démarre si aucune page
-n'a le verdict « Pertinente ». Elle explore l'identité, les activités et les
-mentions indépendantes, puis conserve un nombre borné de nouvelles URLs.
-Celles-ci repassent par la récupération et l’analyse Onbora. Une page inaccessible
-ou jugée hors sujet ne peut pas alimenter le résumé.
+La demande OpenAI regroupe identité, RCCM, activité, produits et services,
+adresse, implantations, contacts professionnels, mentions indépendantes et
+signaux commerciaux utiles à Orange RDC. Les URLs retournées passent par la
+récupération et l'analyse Onbora ; une page inaccessible ou hors sujet ne peut
+pas alimenter le résumé. Sur ce parcours, aucune requête SearXNG supplémentaire
+n'est lancée pour le profil ou les leads : la qualification exploite les preuves
+de cette recherche unique. Les informations absentes restent signalées.
+Les compteurs `ai_search_request_count` et `ai_summary_request_count` sont
+conservés dans le résultat pour distinguer les deux appels au modèle.
+
+Sur le parcours SearXNG sans OpenAI, Gemini reste un complément après analyse
+si aucune page n'a le verdict « Pertinente ».
 Les pages ARSP peuvent atteindre `ONBORA_MAX_ARSP_PAGE_BYTES` (8 Mo par défaut) ;
-les autres gardent `ONBORA_MAX_PAGE_BYTES` (2 Mo). Les requêtes commerciales
+les autres gardent `ONBORA_MAX_PAGE_BYTES` (2 Mo). Sur le parcours SearXNG, les requêtes commerciales
 ne démarrent qu'après une preuve d'identité pertinente ; leur analyse est bornée
 par `ONBORA_LEAD_ANALYSIS_LIMIT` (4 pages par défaut).
 Si la première sélection ne donne aucune page pertinente, Onbora peut lire
-quatre autres résultats SearXNG avant de payer une recherche web IA ; ce plafond
+quatre autres résultats SearXNG avant de demander le complément Gemini ; ce plafond
 est réglable avec `ONBORA_RESCUE_ANALYSIS_LIMIT`.
 Le moteur reconnaît aussi la marque sans suffixe juridique. Lorsqu’un email
 ARSP utilise un domaine concordant avec cette marque, il explore directement
@@ -107,14 +117,15 @@ ONBORA_OFFER_CATALOG_PATH=C:\chemin\vers\catalog.json
 ONBORA_LEAD_QUALIFICATION_ENABLED=1
 ```
 
-Quand une identité pertinente est trouvée, cinq requêtes de recherche supplémentaires
+Sur le parcours SearXNG, quand une identité pertinente est trouvée, cinq requêtes supplémentaires
 cherchent des signaux liés aux implantations, aux parcours clients, aux
 opérations mobiles, à la collaboration et à l’infrastructure. Un catalogue absent n’empêche pas la recherche générale ni
 le résumé IA : seule la section commerciale est marquée indisponible.
 
 ## Démarrage le plus simple (Windows)
 
-Docker Desktop et Python doivent être installés. Double-clique sur
+Python doit être installé. Avec une clé OpenAI activée, Docker et SearXNG ne
+sont pas nécessaires au parcours principal. Double-clique sur
 `LANCER.bat`, ou exécute :
 
 ```powershell
@@ -122,10 +133,12 @@ cd "C:\dev\onbora analysis"
 .\lancer.ps1
 ```
 
-Le script installe les dépendances, démarre le SearXNG local, applique les
+Le script installe les dépendances, applique les
 migrations, importe le classeur s’il ne l’est pas déjà, puis lance le worker et
-Django. Au premier lancement, il demande de créer un superutilisateur. Ouvre
-ensuite <http://127.0.0.1:8000/> et connecte-toi avec ce compte.
+Django. Sans OpenAI, il démarre aussi SearXNG et nécessite Docker Desktop.
+Pour disposer du secours SearXNG avec OpenAI, lance `./lancer.ps1 -StartSearxng`.
+Au premier lancement, il demande de créer un superutilisateur. Ouvre
+ensuite <http://127.0.0.1:8006/> et connecte-toi avec ce compte.
 
 Arrête Django avec `Ctrl+C`. Le worker est alors arrêté automatiquement. Pour
 arrêter aussi SearXNG :
@@ -133,6 +146,33 @@ arrêter aussi SearXNG :
 ```powershell
 docker compose -f .\essai\docker-compose.yml down
 ```
+
+## Recherche SerpApi
+
+Un onglet **SerpApi** ouvre une recherche indépendante sur `/serpapi/` pour tester
+Google Maps, Google Web et Google News. Les scénarios couvrent la découverte
+d’entreprises, leur profil, leurs actualités et leurs technologies / fournisseurs.
+On peut sélectionner une entreprise de l’import ARSP actif (filtre par nom, nom
+commercial, RCCM ou dossier), ou saisir librement une entreprise. La sélection
+préremplit le nom et la province sans consommer de crédit. La requête reste
+modifiable. Le mode **Recherche complète**, sélectionné par défaut,
+lance Web, Maps et News en parallèle : trois appels et jusqu’à trois crédits hors
+cache. Il conserve les résultats disponibles si un moteur échoue. Les modes avec
+un seul moteur effectuent toujours un appel. Aucun appel IA, pagination ou retry
+automatique n’est ajouté. Les essais sont conservés par utilisateur
+et exportables en CSV ou JSON. Le bouton **Vérifier mon quota** utilise l’API de
+compte gratuite, uniquement à la demande.
+
+Ajoute la clé dans le `.env` existant, puis redémarre Django :
+
+```dotenv
+SERPAPI=ta_cle_api
+```
+
+`SERPAPI_API_KEY` et `SERPAPI_KEY` sont aussi acceptés, dans cet ordre de priorité
+avant `SERPAPI`. Aucune dépendance supplémentaire n’est nécessaire. Sur une
+installation existante, exécute `python manage.py migrate` pour créer l’historique.
+Le worker n’est pas nécessaire à cet onglet. Voir [le guide des essais](research/SERPAPI.md).
 
 ## Multi Search
 
@@ -146,6 +186,25 @@ retenues et offres Orange RDC à explorer. Les pistes commerciales restent des
 hypothèses à confirmer. Sans résumé exploitable, les extraits disponibles sont
 affichés et l’absence de preuve est signalée. Le bouton **Copier les résumés et
 liens** produit un texte par entreprise. Les lots restent dans l’historique.
+
+La **Fiche entreprise**, disponible aussi dans le détail d’une recherche, met
+en avant la description, l’activité, l’adresse / siège, les produits et services,
+les implantations, les contacts professionnels et les autres faits utiles
+(projets, partenaires, clients ou chiffres explicitement publiés). Chaque fait
+web cite une page collectée ; les valeurs du registre ARSP sont affichées
+séparément comme déclarées et à confirmer. Les rubriques inconnues indiquent
+« Information non trouvée ». La copie inclut aussi ces rubriques et leurs sources.
+
+Sur le parcours SearXNG, après une preuve d’identité pertinente, deux requêtes recherchent les
+activités et les coordonnées, même lorsque la qualification Orange est désactivée.
+Cette collecte supplémentaire lit au maximum trois nouvelles pages
+(`ONBORA_PROFILE_ANALYSIS_LIMIT`). Les sites rattachés au contact ARSP conservent
+des extraits ciblés plus longs, dont les informations utiles en fin de page.
+Les blocs d’adresse et de contact du pied de page sont aussi conservés sur ces
+sites, même lorsque l’extraction du texte principal les omet.
+Le résumé reste un seul appel IA, avec un plafond de sortie de 2 600 jetons.
+Les anciennes recherches bénéficient de l’affichage des données ARSP ; relance
+une recherche pour obtenir les nouvelles rubriques issues du web.
 
 Le lanceur démarre le worker avec `--concurrency 5`. Un double envoi du même
 formulaire réutilise le lot ; une recherche déjà active pour ce compte est

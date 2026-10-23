@@ -21,7 +21,7 @@
 {% endif %}
 
 {% if run.state == "failed" %}
-  <div class="alert danger"><strong>La recherche a échoué.</strong> Vérifie que SearXNG et le worker sont démarrés, puis relance depuis l’accueil.</div>
+  <div class="alert danger"><strong>La recherche a échoué.</strong> Vérifie la configuration du moteur de recherche et que le worker est démarré, puis relance depuis l’accueil.</div>
 {% endif %}
 
 {% if run.limitations %}
@@ -37,6 +37,14 @@
     <div><strong>{{ run.result_summary.captured_count }}</strong><span>pages lues</span></div>
     <div><strong>{{ relevant_evidence|length }}</strong><span>preuves retenues</span></div>
   </section>
+{% endif %}
+
+{% if not is_active %}
+<section class="panel company-profile-panel">
+  <div class="panel-heading"><div><p class="eyebrow">Les informations essentielles</p><h2>Fiche entreprise</h2></div></div>
+  <p class="section-intro">Activités, adresse et informations utiles réunies par rubrique. Les sources publiques sont cliquables ; les données ARSP restent à confirmer.</p>
+  {% include "research/company_profile.html" with profile=company_profile heading_level=3 only %}
+</section>
 {% endif %}
 
 {% if not is_active and sector_segmentation %}

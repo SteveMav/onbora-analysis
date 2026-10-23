@@ -131,6 +131,30 @@ class MultiSearchTests(TestCase):
         self.assertIn("Entreprise 1", fragment.json()["html"])
         self.assertNotIn("Entreprise 2", fragment.json()["html"])
 
+    def test_random_selection_returns_five_unique_companies_without_launching(self):
+        response = self.client.get("/multi-search/", {"random": "1"})
+        companies = response.json()["companies"]
+        self.assertEqual(len(companies), 5)
+        self.assertEqual(len({company["id"] for company in companies}), 5)
+        self.assertTrue({company["id"] for company in companies}.issubset(
+            {str(record.pk) for record in self.records},
+        ))
+        self.assertEqual(ResearchBatch.objects.count(), 0)
+        self.assertEqual(ResearchRun.objects.count(), 0)
+
+    def test_random_selection_respects_filter_and_latest_import(self):
+        companies = self.client.get("/multi-search/", {"random": "1", "q": "D-1"}).json()["companies"]
+        self.assertEqual(companies, [{"id": str(self.records[0].pk), "name": "Entreprise 1"}])
+        self.assertEqual(self.client.get("/multi-search/", {
+            "random": "1", "q": "Introuvable",
+        }).json()["companies"], [])
+        ArspImport.objects.create(file_name="empty.xlsx", file_hash="7" * 64)
+        self.assertEqual(self.client.get("/multi-search/", {"random": "1"}).json()["companies"], [])
+
+    def test_random_selection_requires_selection_role(self):
+        self.client.force_login(get_user_model().objects.create_user(username="unauthorized-random"))
+        self.assertEqual(self.client.get("/multi-search/", {"random": "1"}).status_code, 404)
+
     def test_mixed_report_exposes_sources_offers_missing_summary_and_failure(self):
         created = self.launch()
         runs = list(ResearchRun.objects.order_by("id"))
@@ -187,6 +211,57 @@ class MultiSearchTests(TestCase):
         page = self.client.get(created.url)
         self.assertNotContains(page, "Invented claim")
         self.assertContains(page, "sources vérifiables")
+
+    def test_profile_fields_are_visible_and_copied_with_sources_and_registry_values(self):
+        created = self.launch(records=[self.records[0]])
+        run = ResearchRun.objects.get()
+        run.state = "awaiting_review"
+        run.seed_snapshot["input_snapshot"].update({
+            "activity_arsp": "Logistique", "address_arsp": "12 avenue du Port_x000d_",
+            "email_arsp": "contact@atlas.example", "phone_arsp": "+243 800 000 001",
+        })
+        evidence = EvidenceCapture.objects.create(
+            canonical_url="https://atlas.example/contact", observed_url="https://atlas.example/contact",
+            title="Contact entreprise", publisher="atlas.example", content_hash="b" * 64,
+            access_status="accessible",
+        )
+        RunEvidence.objects.create(research_run=run, evidence=evidence, position=1,
+                                   verdict="À vérifier", relevant_excerpt="Entreprise 1 transporte des marchandises.")
+        fact = {"text": "Transport de marchandises", "evidence_ids": [evidence.pk]}
+        run.ai_summary = {"status": "complete", "overview": fact, "company_profile": {
+            "activity": [fact],
+            "address": [{"text": "Adresse sans source", "evidence_ids": [9999]}],
+            "services": [{"text": "<script>alert(1)</script>", "evidence_ids": [evidence.pk]}],
+        }}
+        run.save()
+        for url in (created.url, f"/runs/{run.pk}/"):
+            page = self.client.get(url)
+            self.assertContains(page, "Fiche entreprise")
+            self.assertContains(page, "Transport de marchandises")
+            self.assertContains(page, "12 avenue du Port")
+            self.assertContains(page, "Registre ARSP · à confirmer")
+            self.assertContains(page, "Rattachement à l’entreprise à vérifier")
+            self.assertContains(page, "Information non trouvée.")
+            self.assertContains(page, "contact@atlas.example")
+            self.assertNotContains(page, "Adresse sans source")
+            self.assertNotContains(page, "<script>alert(1)</script>")
+        report = self.client.get(created.url).context["report_text"]
+        self.assertIn("Activité :\nTransport de marchandises (À vérifier)", report)
+        self.assertIn("Source : https://atlas.example/contact", report)
+        self.assertIn("Registre ARSP · à confirmer : 12 avenue du Port", report)
+
+    def test_profile_keeps_registry_facts_when_ai_is_unavailable(self):
+        created = self.launch(records=[self.records[0]])
+        run = ResearchRun.objects.get()
+        run.state = "awaiting_review"
+        run.ai_summary = {"status": "failed", "message": "Quota indisponible"}
+        run.seed_snapshot["input_snapshot"].update({"activity_arsp": "BTP", "address_arsp": "25 avenue du Commerce"})
+        run.save()
+        page = self.client.get(created.url)
+        self.assertContains(page, "25 avenue du Commerce")
+        self.assertContains(page, "BTP")
+        self.assertContains(page, "Quota indisponible")
+        self.assertIn("25 avenue du Commerce", page.context["report_text"])
 
 
 class ParallelWorkerTests(SimpleTestCase):

@@ -18,7 +18,9 @@
   {% else %}
   <div class="multi-report-body">
     <section class="multi-findings">
-      <h3>Ce qu’on a trouvé</h3>
+      <h3>Fiche entreprise</h3>
+      {% include "research/company_profile.html" with profile=card.profile only %}
+      <h3 class="multi-summary-heading">Synthèse de la recherche</h3>
       {% if card.summary.status == 'complete' %}
         <p class="multi-overview">{{ card.summary.overview.text }}</p>
         <div class="citation-list">{% for source in card.summary.overview.sources %}<a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">[{{ source.evidence_id }}] {{ source.publisher|default:source.title }} ↗</a>{% endfor %}</div>

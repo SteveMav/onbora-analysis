@@ -1,9 +1,12 @@
 from django.urls import path
 
-from . import multi_search, web_views
+from . import multi_search, serpapi_views, web_views
 
 urlpatterns = [
     path("", web_views.dashboard, name="dashboard"),
+    path("serpapi/", serpapi_views.search_page, name="serpapi-search"),
+    path("serpapi/create", serpapi_views.create, name="serpapi-create"),
+    path("serpapi/<int:search_id>/export/<str:format>/", serpapi_views.export, name="serpapi-export"),
     path("multi-search/", multi_search.selection, name="multi-search"),
     path("multi-search/create", multi_search.create, name="multi-search-create"),
     path("multi-search/<int:batch_id>/", multi_search.detail, name="multi-search-detail"),

@@ -12,6 +12,7 @@ import ipaddress
 import json
 import re
 import socket
+import textwrap
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -174,6 +175,18 @@ def build_lead_query_plan(company: CompanySeed) -> list[QuerySpec]:
     ]
 
 
+def build_profile_query_plan(company: CompanySeed) -> list[QuerySpec]:
+    """Look for practical facts after identity, independently of the offer catalogue."""
+    brand = company.trade_name or company_name_variants(company.legal_name)[-1]
+    target = f'"{brand}" RDC {company.province}'.strip()
+    if domain := company_website_domain(company):
+        target = f"site:{domain}"
+    return [
+        QuerySpec("profile_activity", f"{target} présentation activités produits services"),
+        QuerySpec("profile_contact", f"{target} contact adresse siège implantations"),
+    ]
+
+
 def canonicalize_url(url: str) -> str:
     parsed = urllib.parse.urlsplit(url.strip())
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -273,6 +286,42 @@ def relevant_excerpt(text: str, company: CompanySeed, limit: int = 1600) -> str:
     return "\n\n".join(chosen)[:limit].rstrip()
 
 
+def website_profile_excerpt(text: str, limit: int = 4800) -> str:
+    """Keep the introduction and useful late-page facts on an attached company site."""
+    if len(text) <= limit:
+        return text.rstrip()
+    passages = [
+        part for line in text.splitlines()
+        for part in textwrap.wrap(line.strip(), width=1000, break_long_words=False, break_on_hyphens=False)
+    ]
+    chosen = {index for index in range(min(3, len(passages)))}
+    useful = {
+        "activite", "agence", "adresse", "avenue", "bureau", "client", "contact",
+        "creation", "email", "implantation", "partenaire", "produit", "projet",
+        "service", "siege", "specialite", "telephone", "ville", "coordonnees", "about",
+        "address", "office", "phone", "product", "headquarters",
+    }
+    ranked = sorted(range(len(passages)), key=lambda index: (
+        bool("@" in passages[index] or re.search(r"\+\d[\d ()-]{7,}", passages[index])),
+        len({variant for word in normalize(passages[index]).split() for variant in (word, word.removesuffix("s"))} & useful),
+        -index,
+    ), reverse=True)
+    # Budget per passage prevents one large paragraph from hiding footer contacts.
+    budget = sum(min(len(passages[index]), 1000) + 2 for index in chosen)
+    for index in ranked:
+        if index in chosen:
+            continue
+        if not ({variant for word in normalize(passages[index]).split() for variant in (word, word.removesuffix("s"))} & useful
+                or "@" in passages[index]
+                or re.search(r"\+\d[\d ()-]{7,}", passages[index])):
+            continue
+        cost = min(len(passages[index]), 1000) + 2
+        if budget + cost <= limit:
+            chosen.add(index)
+            budget += cost
+    return "\n\n".join(passages[index][:1000] for index in sorted(chosen))[:limit].rstrip()
+
+
 def assess_text(company: CompanySeed, title: str, text: str, url: str) -> PageAssessment:
     reasons: list[str] = []
     score = 0
@@ -349,7 +398,7 @@ def assess_text(company: CompanySeed, title: str, text: str, url: str) -> PageAs
         source_type=source_type,
         relationship=relationship,
         reasons=tuple(reasons),
-        excerpt=text[:1600].rstrip() if seed_website else relevant_excerpt(text, company),
+        excerpt=website_profile_excerpt(text) if seed_website else relevant_excerpt(text, company),
         final_url=url,
     )
 
@@ -404,6 +453,57 @@ class _PageTitle(HTMLParser):
     def handle_data(self, data):
         if self.in_title:
             self.parts.append(data)
+
+
+class _WebsiteContacts(HTMLParser):
+    """Recover company footer/address blocks discarded by main-text extraction."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags: list[str] = []
+        self.parts: list[str] = []
+        self.blocks: list[tuple[str, bool]] = []
+
+    def _in_scope(self):
+        return any(tag in {"footer", "address"} for tag in self.tags)
+
+    def _flush(self):
+        text = clean_excel_text(" ".join(self.parts))
+        if text:
+            self.blocks.append((text, "address" in self.tags))
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"p", "div", "li", "address", "br"} and self._in_scope():
+            self._flush()
+        if tag not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self.tags.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag in {"p", "div", "li", "address", "footer"} and self._in_scope():
+            self._flush()
+        for index in range(len(self.tags) - 1, -1, -1):
+            if self.tags[index] == tag:
+                del self.tags[index:]
+                break
+
+    def handle_data(self, data):
+        if self._in_scope() and not any(tag in {"script", "style", "noscript"} for tag in self.tags):
+            self.parts.append(data)
+
+
+def _website_contacts(html: str) -> str:
+    parser = _WebsiteContacts()
+    parser.feed(html)
+    parser._flush()
+    blocks = []
+    for text, is_address in parser.blocks:
+        if is_address or "@" in text or re.search(r"\+\d[\d ()-]{7,}", text) or re.search(
+            r"\b(?:adresse|address|avenue|boulevard|siege|telephone|phone|email|courriel)\b", normalize(text),
+        ):
+            if text not in blocks:
+                blocks.append(text[:1000])
+    return "\n".join(blocks)[:1600]
 
 
 def _is_arsp_page(url: str) -> bool:
@@ -541,6 +641,13 @@ class PageFetcher:
                 if title:
                     text = title + "\n" + text
             assessment = assess_text(company, hit.title, text, final_url)
+            # Supplement only a site already attached by the fetched name and
+            # registry domain. A footer alone must never establish ownership.
+            if assessment.relationship == "first_party" and (contacts := _website_contacts(html)):
+                text += "\n\nCoordonnées publiées sur le site de l’entreprise\n" + contacts
+                assessment = PageAssessment(**{
+                    **assessment.__dict__, "excerpt": website_profile_excerpt(text),
+                })
             return PageAssessment(
                 **{**assessment.__dict__, "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()}
             )

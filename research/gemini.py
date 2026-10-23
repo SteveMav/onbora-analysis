@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from django.conf import settings
 
+from .company_profile import PROFILE_FIELDS, PROFILE_INSTRUCTIONS
 from .web_research import CompanySeed, SearchHit, canonicalize_url, company_website_domain
 
 
@@ -50,6 +51,14 @@ SUMMARY_SCHEMA = {
     "type": "object",
     "properties": {
         "overview": SOURCED_STATEMENT_SCHEMA,
+        "company_profile": {
+            "type": "object",
+            "properties": {
+                key: {"type": "array", "items": SOURCED_STATEMENT_SCHEMA}
+                for key in PROFILE_FIELDS
+            },
+            "required": list(PROFILE_FIELDS),
+        },
         "key_facts": {
             "type": "array",
             "items": SOURCED_STATEMENT_SCHEMA,
@@ -60,7 +69,7 @@ SUMMARY_SCHEMA = {
         },
         "gaps": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["overview", "key_facts", "contradictions", "gaps"],
+    "required": ["overview", "company_profile", "key_facts", "contradictions", "gaps"],
 }
 
 
@@ -113,10 +122,20 @@ def validate_summary_payload(payload: Any, allowed_ids: set[int], model: str) ->
     gaps = []
     if isinstance(raw_gaps, list):
         gaps = [text for item in raw_gaps[:8] if (text := _short_text(item, 500))]
+    raw_profile = payload.get("company_profile")
+    profile = {}
+    if isinstance(raw_profile, dict):
+        for key in PROFILE_FIELDS:
+            values = raw_profile.get(key, [])
+            profile[key] = [
+                statement for value in values[:3]
+                if (statement := _validate_statement(value, allowed_ids))
+            ] if isinstance(values, list) else []
     return {
         "status": "complete",
         "model": model,
         "overview": overview,
+        "company_profile": profile,
         "key_facts": statements("key_facts", 10),
         "contradictions": statements("contradictions", 8),
         "gaps": gaps,
@@ -259,6 +278,8 @@ sur le domaine du contact ARSP est rattachée à l'entreprise par concordance
 du nom et du contact. Décris ses activités dans overview et réserve l'absence
 de vérification publique du RCCM à gaps.
 
+{PROFILE_INSTRUCTIONS}
+
 Entreprise ARSP : {company.legal_name}
 Nom commercial ARSP : {company.trade_name or 'non renseigné'}
 Domaine du contact ARSP : {company_website_domain(company) or 'non établi'}
@@ -276,7 +297,7 @@ PREUVES JSON :
                     contents=prompt,
                     config={
                         "temperature": 0,
-                        "max_output_tokens": 1800,
+                        "max_output_tokens": 2600,
                         "response_mime_type": "application/json",
                         "response_json_schema": SUMMARY_SCHEMA,
                     },

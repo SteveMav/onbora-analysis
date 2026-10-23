@@ -3,7 +3,7 @@
 {% block title %}Multi Search · Onbora{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{% static 'research/multi_search.css' %}">
-<script src="{% static 'research/multi_search.js' %}" defer></script>
+<script src="{% static 'research/multi_search.js' %}?v=20261003-random-1" defer></script>
 {% endblock %}
 {% block content %}
 <section class="multi-heading">
@@ -21,6 +21,8 @@
       <input id="multi-query" name="q" value="{{ query }}" placeholder="Nom ou numéro de dossier…" autocomplete="off">
       <button class="button secondary" type="submit">Trouver</button>
     </form>
+    <button id="random-selection" class="button secondary" type="button" disabled>Sélectionner 5 au hasard</button>
+    <p class="muted">Le tirage utilise les résultats de la recherche et remplace ta sélection.</p>
     <p id="selection-notice" class="multi-notice" role="status" aria-live="polite">Tu peux changer de recherche en gardant ta sélection.</p>
     <div id="multi-companies">{% include "research/multi_company_list.html" %}</div>
   </section>

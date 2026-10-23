@@ -87,6 +87,28 @@ class ResearchRun(models.Model):
         indexes = [models.Index(fields=["state", "created_at"])]
 
 
+class SerpApiSearch(models.Model):
+    class State(models.TextChoices):
+        RUNNING = "running", "En cours"
+        COMPLETE = "complete", "Terminée"
+        FAILED = "failed", "Échec"
+
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    submission_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
+    scenario = models.CharField(max_length=32)
+    query = models.CharField(max_length=500)
+    engine = models.CharField(max_length=32)
+    parameters = models.JSONField(default=dict)
+    state = models.CharField(max_length=16, choices=State.choices, default=State.RUNNING)
+    report = models.JSONField(default=dict)
+    error_message = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
 class ResearchBatch(models.Model):
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="research_batches")
     submission_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
